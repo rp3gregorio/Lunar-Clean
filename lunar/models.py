@@ -114,6 +114,26 @@ def k_solid_hayne(z):
     return k_surf + (k_deep - k_surf) * frac
 
 
+@njit(cache=True, fastmath=True, inline='always')
+def density_hayne_h(z, H):
+    """Density (kg/m³) for Hayne 2017 model with variable scale height H (m)."""
+    rho_s = 1100.0
+    rho_d = 1800.0
+    return rho_d - (rho_d - rho_s) * np.exp(-z / H)
+
+
+@njit(cache=True, fastmath=True, inline='always')
+def k_solid_hayne_h(z, H):
+    """Solid conductivity (W/m/K) for Hayne 2017 model with variable H (m)."""
+    rho_s  = 1100.0
+    rho_d  = 1800.0
+    rho    = rho_d - (rho_d - rho_s) * np.exp(-z / H)
+    k_surf = 7.4e-4
+    k_deep = 3.4e-3
+    frac   = (rho - rho_s) / (rho_d - rho_s)
+    return k_surf + (k_deep - k_surf) * frac
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MODEL 3 — CUSTOM  (user-defined template)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,23 +169,23 @@ MODEL_NAMES = {v: k for k, v in MODEL_ID_MAP.items()}   # reverse lookup
 
 
 @njit(cache=True, fastmath=True, inline='always')
-def get_density(z, model_id):
+def get_density(z, model_id, H_param):
     """Return density (kg/m³) at depth z for the selected model."""
     if model_id == 0:
         return density_discrete(z)
     elif model_id == 1:
-        return density_hayne(z)
+        return density_hayne_h(z, H_param)
     else:
         return density_custom(z)
 
 
 @njit(cache=True, fastmath=True, inline='always')
-def get_k_solid(z, model_id):
+def get_k_solid(z, model_id, H_param):
     """Return solid conductivity (W/m/K) at depth z for the selected model."""
     if model_id == 0:
         return k_solid_discrete(z)
     elif model_id == 1:
-        return k_solid_hayne(z)
+        return k_solid_hayne_h(z, H_param)
     else:
         return k_solid_custom(z)
 
@@ -185,7 +205,7 @@ def heat_capacity(T):
 
 
 @njit(cache=True, fastmath=True, inline='always')
-def thermal_conductivity(T, z, chi, model_id):
+def thermal_conductivity(T, z, chi, model_id, H_param):
     """
     Total thermal conductivity (W/m/K).
 
@@ -200,8 +220,9 @@ def thermal_conductivity(T, z, chi, model_id):
     z        : depth (m)
     chi      : radiative conductivity parameter (typical range 1.5–4)
     model_id : 0 = discrete, 1 = hayne, 2 = custom
+    H_param  : Hayne scale height (m); used only when model_id == 1
     """
-    k_s   = get_k_solid(z, model_id)
+    k_s   = get_k_solid(z, model_id, H_param)
     T_ref = 350.0
     return k_s * (1.0 + chi * (T / T_ref) ** 3)
 

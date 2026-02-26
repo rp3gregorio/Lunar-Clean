@@ -114,6 +114,7 @@ def solve_thermal_model(
     model_id,
     sunscale,
     ndays,
+    H_param    = 0.07,
     dt_frac    = 0.01,
     albedo     = DEFAULT_ALBEDO,
     emissivity = DEFAULT_EMISSIVITY,
@@ -141,6 +142,7 @@ def solve_thermal_model(
     ndays      : number of lunar days to simulate
     dt_frac    : timestep as a fraction of the numerical stability limit
     albedo     : Bond albedo (fraction of sunlight reflected)
+    H_param    : Hayne exponential scale height (m); used only when model_id == 1
     emissivity : IR emissivity
 
     Returns
@@ -167,7 +169,7 @@ def solve_thermal_model(
     dz      = np.diff(z_grid)
 
     # Precompute depth-only quantities — these never change during the simulation
-    rho  = np.array([get_density(z_grid[iz], model_id) for iz in range(nz)],
+    rho  = np.array([get_density(z_grid[iz], model_id, H_param) for iz in range(nz)],
                     dtype=np.float32)
     dz_c = np.array([0.5 * (dz[iz - 1] + dz[iz]) for iz in range(1, nz - 1)],
                     dtype=np.float32)
@@ -192,7 +194,7 @@ def solve_thermal_model(
         cp = np.empty(nz, dtype=np.float32)
 
         for iz in range(nz):
-            k[iz]  = thermal_conductivity(T[iz], z_grid[iz], chi, model_id)
+            k[iz]  = thermal_conductivity(T[iz], z_grid[iz], chi, model_id, H_param)
             cp[iz] = heat_capacity(T[iz])
 
         # Surface BC
@@ -254,10 +256,22 @@ def solve_with_h(
             slope, aspect,
             horizons, az_angles,
             chi, model_id, sunscale, ndays,
-            dt_frac=dt_frac, albedo=albedo, emissivity=emissivity,
+            H_param, dt_frac, albedo, emissivity,
         )
 
-    # Pure-Python fallback for H-sweep
+    # model_id 0 (discrete) and 1 (hayne) are fully supported by the compiled
+    # solver — route them through Numba regardless of whether callables were passed.
+    if model_id in (0, 1):
+        return solve_thermal_model(
+            z_grid, T_init,
+            lat_deg, lon_deg,
+            slope, aspect,
+            horizons, az_angles,
+            chi, model_id, sunscale, ndays,
+            H_param, dt_frac, albedo, emissivity,
+        )
+
+    # Pure-Python fallback — only reached for model_id == 2 (custom) with callables
     from lunar.models   import heat_capacity as cp_fn
     from lunar.solar    import solar_geometry as sol_geo
     from lunar.horizon  import check_illumination as chk_ill
