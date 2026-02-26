@@ -166,6 +166,12 @@ def solve_thermal_model(
 
     dz      = np.diff(z_grid)
 
+    # Precompute depth-only quantities — these never change during the simulation
+    rho  = np.array([get_density(z_grid[iz], model_id) for iz in range(nz)],
+                    dtype=np.float32)
+    dz_c = np.array([0.5 * (dz[iz - 1] + dz[iz]) for iz in range(1, nz - 1)],
+                    dtype=np.float32)
+
     T_profile[0, :] = T
     save_idx = 1
 
@@ -181,15 +187,13 @@ def solve_thermal_model(
                                      sunscale, albedo)
                    if lit else 0.0)
 
-        # Material properties
-        rho = np.empty(nz, dtype=np.float32)
-        k   = np.empty(nz, dtype=np.float32)
-        cp  = np.empty(nz, dtype=np.float32)
+        # Material properties (k and cp depend on temperature — must stay in loop)
+        k  = np.empty(nz, dtype=np.float32)
+        cp = np.empty(nz, dtype=np.float32)
 
         for iz in range(nz):
-            rho[iz] = get_density(z_grid[iz], model_id)
-            k[iz]   = thermal_conductivity(T[iz], z_grid[iz], chi, model_id)
-            cp[iz]  = heat_capacity(T[iz])
+            k[iz]  = thermal_conductivity(T[iz], z_grid[iz], chi, model_id)
+            cp[iz] = heat_capacity(T[iz])
 
         # Surface BC
         T[0] = _surface_bc(T[1], dz[0], Q_solar, k[0], emissivity)
@@ -201,8 +205,7 @@ def solve_thermal_model(
             k_p  = 0.5 * (k[iz]     + k[iz + 1])
             q_m  = k_m * (T[iz] - T[iz - 1]) / dz[iz - 1]
             q_p  = k_p * (T[iz + 1] - T[iz]) / dz[iz]
-            dz_c = 0.5 * (dz[iz - 1] + dz[iz])
-            T_new[iz] = T[iz] + dt * (q_p - q_m) / (dz_c * rho[iz] * cp[iz])
+            T_new[iz] = T[iz] + dt * (q_p - q_m) / (dz_c[iz - 1] * rho[iz] * cp[iz])
 
         # Bottom BC — constant basal heat flux
         T_new[-1] = T[-2] + Q_basal * dz[-1] / k[-1]
@@ -275,6 +278,10 @@ def solve_with_h(
     T_profile[0, :] = T
     sidx = 1
 
+    # rho and ks depend only on z_grid and H_param — compute once outside the loop
+    rho = np.array([density_fn(float(z), H_param) for z in z_grid])
+    ks  = np.array([k_solid_fn(float(z), H_param) for z in z_grid])
+
     for it in range(nt_total):
         t_now = it * dt
         zen, az, _ = sol_geo(lat_deg, lon_deg, t_now)
@@ -282,8 +289,6 @@ def solve_with_h(
         Q = (dflux(zen, az, slope, aspect, sunscale, albedo)
              if lit else 0.0)
 
-        rho = np.array([density_fn(float(z), H_param) for z in z_grid])
-        ks  = np.array([k_solid_fn(float(z), H_param) for z in z_grid])
         cp  = np.array([cp_fn(t_)  for t_ in T])
         k   = ks * (1.0 + chi * (T / 350.0) ** 3)
 
