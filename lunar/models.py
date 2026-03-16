@@ -31,10 +31,11 @@ be used when sweeping H during sensitivity analysis.
 import numpy as np
 from numba import njit
 
-# ── Module-level globals for dynamic H-parameter ──────────────────────────────
-# Use set_hayne_h() / set_layer1_h() to change these before model runs.
-_HAYNE_H     = 0.07   # Hayne exponential scale height (m) — default 7 cm
-_H_LAYER1    = 0.07   # Discrete Layer-1 boundary (m)      — default 7 cm
+# ── Module-level globals for dynamic parameters ───────────────────────────────
+# Use the set_*() functions below to change these before model runs.
+_HAYNE_H     = 0.07    # Hayne exponential scale height (m) — default 7 cm
+_H_LAYER1    = 0.07    # Discrete Layer-1 boundary (m)      — default 7 cm
+_RHO_SURFACE = 1100.0  # Top-layer surface density (kg/m³)  — default 1100
 
 
 def set_hayne_h(h_m: float):
@@ -47,6 +48,21 @@ def set_layer1_h(h_m: float):
     """Set the discrete Layer-1 thickness (metres) for subsequent runs."""
     global _H_LAYER1
     _H_LAYER1 = float(h_m)
+
+
+def set_rho_surface(rho_kg_m3: float):
+    """
+    Set the top-layer regolith density (kg/m³) for pure-Python model runs.
+
+    Typical range: 800 (very fluffy, freshly disturbed) – 1400 (compact).
+    Apollo drill-core measurements suggest ~1100 kg/m³ for the uppermost dust.
+
+    Note: the Numba-compiled solver uses a compile-time constant (1100 kg/m³).
+    This setter affects the pure-Python functions (density_*_py) used for
+    sensitivity sweeps and the interactive density-profile viewer.
+    """
+    global _RHO_SURFACE
+    _RHO_SURFACE = float(rho_kg_m3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,10 +229,11 @@ def thermal_conductivity(T, z, chi, model_id):
 # at runtime inside @njit.  These plain-Python versions read the module
 # globals (_HAYNE_H, _H_LAYER1) on every call.
 
-def density_hayne_py(z, H=None):
-    """Pure-Python Hayne density (reads _HAYNE_H if H is None)."""
-    h = H if H is not None else _HAYNE_H
-    rho_s, rho_d = 1100.0, 1800.0
+def density_hayne_py(z, H=None, rho_surface=None):
+    """Pure-Python Hayne density (reads _HAYNE_H / _RHO_SURFACE if not given)."""
+    h     = H            if H            is not None else _HAYNE_H
+    rho_s = rho_surface  if rho_surface  is not None else _RHO_SURFACE
+    rho_d = 1800.0
     return rho_d - (rho_d - rho_s) * np.exp(-z / h)
 
 
@@ -229,14 +246,15 @@ def k_solid_hayne_py(z, H=None):
     return k_surf + (k_deep - k_surf) * (rho - rho_s) / (rho_d - rho_s)
 
 
-def density_discrete_py(z, H=None):
-    """Pure-Python discrete density (reads _H_LAYER1 if H is None)."""
-    h  = H if H is not None else _H_LAYER1
-    L2 = 0.20
+def density_discrete_py(z, H=None, rho_surface=None):
+    """Pure-Python discrete density (reads _H_LAYER1 / _RHO_SURFACE if not given)."""
+    h     = H            if H            is not None else _H_LAYER1
+    rho_s = rho_surface  if rho_surface  is not None else _RHO_SURFACE
+    L2    = 0.20
     if z < h:
-        return 1100.0
+        return rho_s
     elif z < L2:
-        return 1100.0 + (1700.0 - 1100.0) * (z - h) / (L2 - h)
+        return rho_s + (1700.0 - rho_s) * (z - h) / (L2 - h)
     else:
         return 1700.0 + (1800.0 - 1700.0) * min(1.0, (z - L2) / 2.80)
 
