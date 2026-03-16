@@ -367,6 +367,443 @@ def _model_labels_get(name):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 7. LOCAL TERRAIN MAP  (DEM overview around target)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dem_overview(elev_m, map_res, target_lat, target_lon,
+                 window_deg=5, figsize=(14, 6)):
+    """
+    Show the global Moon DEM and a zoomed local terrain map around the target.
+
+    Left panel  : Full Moon elevation map with target location marked.
+    Right panel : Local terrain (±window_deg) with contour lines.
+
+    Parameters
+    ----------
+    elev_m      : (H, W) float32 — full DEM elevation grid in metres
+    map_res     : pixels per degree
+    target_lat  : target latitude (degrees)
+    target_lon  : target longitude (degrees, 0–360)
+    window_deg  : half-width of the local zoom box in degrees
+    """
+    H, W    = elev_m.shape
+    pix_deg = 1.0 / map_res
+
+    # Target pixel
+    row_t = int(round((90.0 - target_lat) / pix_deg - 0.5))
+    col_t = int(round(target_lon          / pix_deg - 0.5))
+    row_t = max(0, min(H - 1, row_t))
+    col_t = max(0, min(W - 1, col_t))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+
+    # ── Left: Full Moon DEM ────────────────────────────────────────────────────
+    step    = max(1, H // 360)
+    elev_ds = elev_m[::step, ::step]
+    lon_full = np.linspace(0, 360, elev_ds.shape[1])
+    lat_full = np.linspace(90, -90, elev_ds.shape[0])
+
+    im1 = ax1.pcolormesh(lon_full, lat_full, elev_ds / 1000.0,
+                         cmap='gist_earth', shading='auto',
+                         vmin=-9, vmax=10)
+    plt.colorbar(im1, ax=ax1, label='Elevation (km)', shrink=0.75)
+    ax1.plot(target_lon, target_lat, 'r*',
+             markersize=14, markeredgewidth=1, markeredgecolor='white',
+             label='Target', zorder=10)
+    ax1.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
+    ax1.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
+    ax1.set_title('Global DEM — LOLA (LRO)', fontsize=12, weight='bold')
+    ax1.legend(fontsize=9)
+    ax1.set_aspect('equal')
+
+    # ── Right: Zoomed local DEM ────────────────────────────────────────────────
+    lat_min = max(-90, target_lat - window_deg)
+    lat_max = min( 90, target_lat + window_deg)
+    lon_min = max(  0, target_lon - window_deg)
+    lon_max = min(360, target_lon + window_deg)
+
+    r0 = max(0, int(round((90 - lat_max) / pix_deg - 0.5)))
+    r1 = min(H, int(round((90 - lat_min) / pix_deg - 0.5)) + 1)
+    c0 = max(0, int(round(lon_min / pix_deg - 0.5)))
+    c1 = min(W, int(round(lon_max / pix_deg - 0.5)) + 1)
+
+    elev_local = elev_m[r0:r1, c0:c1]
+    lons_local = np.linspace(lon_min, lon_max, elev_local.shape[1])
+    lats_local = np.linspace(lat_max, lat_min, elev_local.shape[0])
+
+    im2 = ax2.pcolormesh(lons_local, lats_local, elev_local / 1000.0,
+                         cmap='gist_earth', shading='auto')
+    plt.colorbar(im2, ax=ax2, label='Elevation (km)', shrink=0.75)
+
+    cs = ax2.contour(lons_local, lats_local, elev_local / 1000.0,
+                     levels=8, colors='black', linewidths=0.4, alpha=0.4)
+    ax2.clabel(cs, inline=True, fontsize=7, fmt='%.1f km')
+
+    ax2.plot(target_lon, target_lat, 'r*',
+             markersize=16, markeredgewidth=1, markeredgecolor='white',
+             label=f'{target_lat:.3f}°N, {target_lon:.3f}°E', zorder=10)
+    ax2.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
+    ax2.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
+    ax2.set_title(f'Local Terrain  (±{window_deg}°)', fontsize=12, weight='bold')
+    ax2.legend(fontsize=9)
+    ax2.set_aspect('equal')
+
+    plt.suptitle('Digital Elevation Model', fontsize=14, weight='bold')
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. HORIZON PROFILE  (polar plot)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def horizon_polar(horizons, az_angles, svf, lat, lon, figsize=(8, 8)):
+    """
+    Polar plot of the terrain horizon profile at the target location.
+
+    The radial axis shows how high the surrounding terrain appears in each
+    compass direction (in degrees above the local horizontal).  A zero value
+    means a flat, unobstructed view; a larger value means a hill or crater
+    wall is blocking the sky in that direction.
+
+    Parameters
+    ----------
+    horizons  : 1-D array from compute_horizon_profile() (radians)
+    az_angles : same azimuth array used when computing horizons (radians)
+    svf       : sky-view factor (0–1)
+    lat, lon  : location (degrees)
+    """
+    az_plot    = np.append(az_angles, az_angles[0])
+    horiz_deg  = np.degrees(np.append(horizons, horizons[0]))
+    horiz_pos  = np.maximum(horiz_deg, 0.0)
+
+    fig, ax = plt.subplots(figsize=figsize,
+                           subplot_kw={'projection': 'polar'})
+
+    ax.fill(az_plot, horiz_pos, alpha=0.45, color='saddlebrown',
+            label='Terrain horizon')
+    ax.plot(az_plot, horiz_pos, color='saddlebrown', lw=2)
+
+    # Sky dome (reference)
+    ax.fill_between(az_plot, horiz_pos, np.full_like(az_plot, 90.0),
+                    alpha=0.08, color='steelblue', label='Open sky')
+
+    # Compass: North at top, clockwise
+    ax.set_theta_direction(-1)
+    ax.set_theta_offset(np.pi / 2)
+    ax.set_thetagrids([0, 45, 90, 135, 180, 225, 270, 315],
+                      ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'],
+                      fontsize=11, weight='bold')
+
+    max_h = max(float(np.degrees(np.max(horizons))), 5.0)
+    ax.set_ylim(0, max_h * 1.25)
+    ax.set_ylabel('Horizon elevation (°)', labelpad=18, fontsize=10)
+    ax.set_title(
+        f'Terrain Horizon Profile\n'
+        f'{lat:.3f}°N, {lon:.3f}°E\n'
+        f'Sky-View Factor: {svf:.3f}  '
+        f'(1.0 = completely open)',
+        fontsize=12, weight='bold', pad=20)
+    ax.legend(fontsize=9, loc='upper right', bbox_to_anchor=(1.25, 1.15))
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. ILLUMINATION TIMELINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def illumination_timeline(lat_deg, lon_deg, slope, aspect,
+                          horizons, az_angles,
+                          sunscale=1.0, albedo=0.09,
+                          n_pts=1000, figsize=(13, 9)):
+    """
+    Show solar illumination and absorbed flux over one complete lunar day.
+
+    Computes solar position at n_pts evenly-spaced times and checks whether
+    the surface is lit (accounting for topographic shadowing from the horizon
+    profile).
+
+    Panels
+    ------
+    1. Solar elevation angle vs time — gold = sunlit, grey = shadow, blue = below horizon
+    2. Absorbed solar flux (W/m²) vs time
+    3. Running illumination percentage throughout the day
+
+    Parameters
+    ----------
+    lat_deg, lon_deg : location (degrees)
+    slope, aspect    : terrain geometry (radians)
+    horizons         : horizon-profile array from compute_horizon_profile()
+    az_angles        : azimuth array (radians)
+    sunscale         : solar flux multiplier
+    albedo           : fraction of sunlight reflected
+    n_pts            : number of time steps to evaluate
+    """
+    from lunar.solar   import solar_geometry, direct_solar_flux
+    from lunar.horizon import check_illumination
+    from lunar.constants import LUNAR_DAY, S0
+
+    t_arr    = np.linspace(0, LUNAR_DAY, n_pts)
+    sol_elev = np.zeros(n_pts)
+    sol_flux = np.zeros(n_pts)
+    is_lit   = np.zeros(n_pts, dtype=bool)
+
+    for i in range(n_pts):
+        zen, az, _ = solar_geometry(lat_deg, lon_deg, t_arr[i])
+        lit         = bool(check_illumination(zen, az, horizons, az_angles))
+        sol_elev[i] = 90.0 - np.degrees(zen)
+        is_lit[i]   = lit
+        if lit:
+            sol_flux[i] = float(direct_solar_flux(zen, az, slope, aspect,
+                                                   sunscale, albedo))
+
+    illum_frac = float(np.mean(is_lit))
+    t_hours    = t_arr / 3600.0
+    day_h      = LUNAR_DAY / 3600.0
+
+    fig, axes = plt.subplots(3, 1, figsize=figsize, sharex=True,
+                              gridspec_kw={'hspace': 0.12})
+
+    # ── Panel 1: Solar elevation ───────────────────────────────────────────────
+    ax1 = axes[0]
+    ax1.fill_between(t_hours, sol_elev, 0,
+                     where=(sol_elev > 0) & is_lit,
+                     alpha=0.35, color='gold', label='Sunlit')
+    shadow = (sol_elev > 0) & ~is_lit
+    ax1.fill_between(t_hours, sol_elev, 0,
+                     where=shadow,
+                     alpha=0.6, color='dimgray', label='Topographic shadow')
+    ax1.fill_between(t_hours, sol_elev.clip(max=0), 0,
+                     alpha=0.20, color='steelblue', label='Below horizon (night)')
+    ax1.plot(t_hours, sol_elev, color='#E67E22', lw=1.8)
+    ax1.axhline(0, color='black', lw=1, ls='--', alpha=0.6)
+    ax1.set_ylabel('Solar Elevation (°)', fontsize=11, weight='bold')
+    ax1.set_title('Solar Illumination Analysis  —  one full lunar day',
+                  fontsize=13, weight='bold')
+    ax1.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    ax1.grid(True, alpha=0.3)
+
+    # ── Panel 2: Absorbed flux ─────────────────────────────────────────────────
+    ax2 = axes[1]
+    ax2.fill_between(t_hours, sol_flux, alpha=0.4, color='#E74C3C')
+    ax2.plot(t_hours, sol_flux, color='#C0392B', lw=1.5, label='Absorbed solar flux')
+    ax2.set_ylabel('Absorbed Flux (W/m²)', fontsize=11, weight='bold')
+    ax2.set_title('Absorbed Solar Energy', fontsize=12, weight='bold')
+    ax2.legend(fontsize=9)
+    ax2.grid(True, alpha=0.3)
+
+    peak_idx = int(np.argmax(sol_flux))
+    if sol_flux[peak_idx] > 0:
+        ax2.annotate(f'Peak: {sol_flux[peak_idx]:.0f} W/m²',
+                     xy=(t_hours[peak_idx], sol_flux[peak_idx]),
+                     xytext=(t_hours[peak_idx] + day_h * 0.04,
+                             sol_flux[peak_idx] * 0.82),
+                     fontsize=9, color='darkred', weight='bold',
+                     arrowprops=dict(arrowstyle='->', color='darkred'))
+
+    # ── Panel 3: Cumulative illumination ───────────────────────────────────────
+    ax3 = axes[2]
+    running = np.cumsum(is_lit) / np.arange(1, n_pts + 1)
+    ax3.plot(t_hours, running * 100.0, color='#27AE60', lw=2.5)
+    ax3.fill_between(t_hours, running * 100.0, alpha=0.25, color='#27AE60')
+    ax3.axhline(illum_frac * 100.0, color='#1E8449', ls='--', lw=1.5, alpha=0.9,
+                label=f'Total: {illum_frac*100:.1f}% of day is sunlit')
+    ax3.set_xlabel('Time in lunar day (hours)', fontsize=11, weight='bold')
+    ax3.set_ylabel('Illumination (%)', fontsize=11, weight='bold')
+    ax3.set_title('Cumulative Illumination Fraction', fontsize=12, weight='bold')
+    ax3.set_ylim(0, 105)
+    ax3.legend(fontsize=9)
+    ax3.grid(True, alpha=0.3)
+
+    plt.suptitle(f'{lat_deg:.3f}°N, {lon_deg:.3f}°E  |  '
+                 f'SVF check via horizon profile',
+                 fontsize=11, y=1.01)
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. DENSITY PROFILE VIEWER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def density_profile(z_grid, model_name, rho_surface=1100.0, h_param=0.07,
+                    figsize=(8, 7)):
+    """
+    Plot regolith density vs depth for the selected model.
+
+    Helps users understand what "top-layer surface density" means physically.
+    The density controls how quickly heat diffuses through the soil — lower
+    density (fluffier, more porous regolith) means faster temperature changes.
+
+    Parameters
+    ----------
+    z_grid      : depth array from create_depth_grid() (metres)
+    model_name  : 'discrete' or 'hayne_exponential'
+    rho_surface : surface (top-layer) density in kg/m³ (default 1100)
+    h_param     : layer-1 thickness (discrete) or scale height (Hayne) in metres
+    """
+    from lunar.models import density_discrete_py, density_hayne_py
+
+    if model_name == 'discrete':
+        rho = np.array([density_discrete_py(float(z), H=h_param,
+                                            rho_surface=rho_surface)
+                        for z in z_grid])
+    else:
+        rho = np.array([density_hayne_py(float(z), H=h_param,
+                                          rho_surface=rho_surface)
+                        for z in z_grid])
+
+    color, ls, label = _model_style(model_name)
+    z_cm = z_grid * 100.0
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(rho, z_cm, color=color, ls=ls, lw=3, label=label)
+    ax.fill_betweenx(z_cm, 0, rho, alpha=0.15, color=color)
+
+    # Layer annotations for the discrete model
+    if model_name == 'discrete':
+        h_cm = h_param * 100.0
+        ax.axhline(h_cm, color='gray', ls='--', lw=1.5, alpha=0.7,
+                   label=f'Layer 1/2 boundary ({h_cm:.0f} cm)')
+        ax.axhline(20, color='gray', ls=':', lw=1.5, alpha=0.7,
+                   label='Layer 2/3 boundary (20 cm)')
+        ax.text(rho_surface + 25, h_cm * 0.35,
+                f'Layer 1\nFluffy surface dust\nρ = {rho_surface:.0f} kg/m³',
+                fontsize=8.5, color='gray', va='center')
+        ax.text(rho_surface + 25, (h_cm + 20) / 2,
+                'Layer 2\nTransitional',
+                fontsize=8.5, color='gray', va='center')
+        ax.text(rho_surface + 25, 30,
+                'Layer 3\nConsolidated regolith',
+                fontsize=8.5, color='gray', va='center')
+
+    ax.set_xlabel('Density (kg/m³)', fontsize=12, weight='bold')
+    ax.set_ylabel('Depth (cm)', fontsize=12, weight='bold')
+    ax.set_title(
+        f'Regolith Density Profile — {label}\n'
+        f'Surface density: {rho_surface:.0f} kg/m³  |  '
+        f'Layer thickness: {h_param * 100:.0f} cm',
+        fontsize=12, weight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.invert_yaxis()
+    ax.set_xlim(left=0)
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. SURFACE TEMPERATURE MAP  (analytical equilibrium estimate)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def surface_temperature_map(elev_m, map_res, target_lat, target_lon,
+                             albedo=0.09, emissivity=0.95,
+                             window_deg=5, T_simulated_max=None,
+                             figsize=(14, 6)):
+    """
+    Estimated peak and mean surface temperature map for the local terrain.
+
+    Uses the analytical equilibrium formula for a flat, airless body:
+        T_noon  = ( (1-A)·S₀·cos(lat) / (ε·σ) )^¼    [peak noon temperature]
+        T_night ≈ 95 K  (approximate lunar nighttime minimum)
+
+    This is a fast spatial estimate — the full thermal model gives a more
+    accurate single-point value for the target location.
+
+    Parameters
+    ----------
+    elev_m          : full DEM elevation grid
+    map_res         : pixels per degree
+    target_lat/lon  : target location (degrees)
+    albedo          : Bond albedo
+    emissivity      : IR emissivity
+    window_deg      : half-width of displayed region (degrees)
+    T_simulated_max : optional — simulated surface T_max from the full model,
+                      shown as an annotation at the target point
+    """
+    from lunar.constants import S0, sigma as _sigma
+
+    H, W    = elev_m.shape
+    pix_deg = 1.0 / map_res
+
+    row_t = int(round((90.0 - target_lat) / pix_deg - 0.5))
+    col_t = int(round(target_lon          / pix_deg - 0.5))
+    row_t = max(0, min(H - 1, row_t))
+    col_t = max(0, min(W - 1, col_t))
+
+    # Local window
+    win   = int(window_deg * map_res)
+    r0    = max(0, row_t - win);  r1 = min(H, row_t + win)
+    c0    = max(0, col_t - win);  c1 = min(W, col_t + win)
+
+    elev_local  = elev_m[r0:r1, c0:c1]
+    lats_local  = 90.0 - (np.arange(r0, r1) + 0.5) * pix_deg
+    lons_local  = (np.arange(c0, c1) + 0.5) * pix_deg
+
+    # Analytical peak temperature (flat terrain, local noon)
+    cos_lat = np.maximum(0.005, np.cos(np.radians(lats_local)))
+    T_noon  = ((1.0 - albedo) * S0 * cos_lat[:, None] /
+               (emissivity * _sigma)) ** 0.25
+
+    # Night-side minimum (empirical lunar average)
+    T_night = np.where(np.abs(lats_local)[:, None] < 60, 95.0, 70.0)
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize)
+    extent = [lons_local[0], lons_local[-1], lats_local[-1], lats_local[0]]
+
+    # ── Panel 1: Elevation ─────────────────────────────────────────────────────
+    ax1 = axes[0]
+    im1 = ax1.imshow(elev_local / 1000.0, cmap='gist_earth',
+                     aspect='auto', extent=extent)
+    plt.colorbar(im1, ax=ax1, label='Elevation (km)', shrink=0.8)
+    ax1.plot(target_lon, target_lat, 'r*', markersize=14, markeredgewidth=1,
+             markeredgecolor='white', zorder=10)
+    ax1.set_xlabel('Longitude (°E)', fontsize=10, weight='bold')
+    ax1.set_ylabel('Latitude (°N)', fontsize=10, weight='bold')
+    ax1.set_title('Terrain Elevation', fontsize=11, weight='bold')
+
+    # ── Panel 2: Peak (noon) temperature ──────────────────────────────────────
+    ax2 = axes[1]
+    im2 = ax2.imshow(T_noon, cmap='hot', aspect='auto',
+                     extent=extent, vmin=200, vmax=420)
+    plt.colorbar(im2, ax=ax2, label='Est. Peak Temp (K)', shrink=0.8)
+    annot_txt = (f'Model: {T_simulated_max:.0f} K'
+                 if T_simulated_max is not None
+                 else f'Est.: {T_noon[row_t - r0, col_t - c0]:.0f} K')
+    ax2.plot(target_lon, target_lat, 'c*', markersize=14, markeredgewidth=1,
+             markeredgecolor='black', zorder=10, label=annot_txt)
+    ax2.set_xlabel('Longitude (°E)', fontsize=10, weight='bold')
+    ax2.set_ylabel('Latitude (°N)', fontsize=10, weight='bold')
+    ax2.set_title('Estimated Peak Temperature\n(noon, flat terrain)',
+                  fontsize=11, weight='bold')
+    ax2.legend(fontsize=9)
+
+    # ── Panel 3: Day-night temperature swing ───────────────────────────────────
+    ax3 = axes[2]
+    T_swing = T_noon - T_night
+    im3 = ax3.imshow(T_swing, cmap='RdYlBu_r', aspect='auto',
+                     extent=extent, vmin=0)
+    plt.colorbar(im3, ax=ax3, label='Temp Swing (K)', shrink=0.8)
+    ax3.plot(target_lon, target_lat, 'g*', markersize=14, markeredgewidth=1,
+             markeredgecolor='black', zorder=10)
+    ax3.set_xlabel('Longitude (°E)', fontsize=10, weight='bold')
+    ax3.set_ylabel('Latitude (°N)', fontsize=10, weight='bold')
+    ax3.set_title('Estimated Day–Night\nTemperature Swing (K)',
+                  fontsize=11, weight='bold')
+
+    plt.suptitle(
+        f'Surface Temperature Estimates — {target_lat:.3f}°N, {target_lon:.3f}°E  '
+        f'(±{window_deg}°)\n'
+        f'Albedo = {albedo:.2f}  |  Emissivity = {emissivity:.2f}',
+        fontsize=12, weight='bold')
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. PARAMETER SENSITIVITY
 # ─────────────────────────────────────────────────────────────────────────────
 

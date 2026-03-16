@@ -2,6 +2,7 @@ numpy>=1.24
 numba>=0.57
 matplotlib>=3.7
 tqdm>=4.65
+ipywidgets>=8.0
 # Optional — only needed if your LDEM file is in JP2 format
 # imageio>=2.28
 # imageio[pillow]
