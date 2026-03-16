@@ -10,8 +10,19 @@ pip install -r requirements.txt
 jupyter notebook Lunar_Thermal.ipynb
 ```
 
-Place the LOLA DEM files (`LDEM_*.LBL` + `LDEM_*.IMG` or `.JP2`) in the same
-folder as the notebook before running.
+The LOLA DEM files are included in this repository — no separate download needed:
+
+| File | Description |
+|------|-------------|
+| `LDEM_4.IMG` | Binary elevation data, 720 × 1440 pixels (4 pix/deg, ~7.6 km/pix) |
+| `LDEM_4.LBL` | PDS3 label for the IMG file |
+| `LDEM_4.JP2` | JPEG2000-compressed version of the same data |
+| `LDEM_4_JP2.LBL` | PDS3 label for the JP2 file |
+
+These are LRO LOLA Global Digital Elevation Model (LDEM) V3.0 products
+(Dataset: `LRO-L-LOLA-4-GDR-V1.0`).  Elevation values are heights in metres
+above a 1737.4 km reference sphere, scaled by 0.5 m/DN.  The model
+auto-selects higher-resolution files if present (see `lunar/dem.py`).
 
 ## Repository layout
 

@@ -144,7 +144,7 @@ def load_ldem(search_dirs=None):
         if not d.exists():
             continue
         for pat in patterns:
-            for lbl_path in d.glob(pat):
+            for lbl_path in sorted(d.glob(pat)):
                 label    = _parse_pds3_label(lbl_path)
                 ref      = label.get('__IMAGE_FILE__')
                 if not ref:
