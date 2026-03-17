@@ -12,10 +12,11 @@ section of the notebook uses a consistent visual style.
 
 Public functions
 ----------------
-diurnal_cycles()      — Temperature vs time at multiple depths.
-heatmap()             — 2-D temperature field (depth × time).
-apollo_comparison()   — Model profile vs Apollo HFE measurements.
-model_comparison()    — Two or more models side-by-side.
+diurnal_cycles()         — Temperature vs time at multiple depths.
+heatmap()                — 2-D temperature field (depth × time).
+apollo_comparison()      — Model profile vs single Apollo HFE site.
+dual_apollo_comparison() — Both Apollo 15 & 17 side-by-side.
+model_comparison()       — Two or more models side-by-side.
 sensitivity_sweep()   — Parameter sensitivity: 6-panel summary.
 batch_summary()       — Grid of bar/line plots for batch results.
 """
@@ -246,6 +247,102 @@ def apollo_comparison(stats, errors, site_name, model_name,
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.35, pad=0.8))
 
     plt.suptitle(f'{site_name} Model Validation', fontsize=15, weight='bold', y=0.99)
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3b. DUAL APOLLO COMPARISON  (Apollo 15 and Apollo 17 side-by-side)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
+                           figsize=(16, 11)):
+    """
+    Show both Apollo 15 and Apollo 17 validation side-by-side in one figure.
+
+    Parameters
+    ----------
+    apollo_results : dict with keys 'Apollo 15' and 'Apollo 17', each mapping
+                     to {'stats': extract_stats() output,
+                         'errors': compute_apollo_errors() output}
+    model_name     : used in title / legend
+    sunscale, chi, albedo : for the config text box
+    figsize        : figure size
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    sites  = ['Apollo 15', 'Apollo 17']
+    colors = ['#1A5276', '#884EA0']   # blue for A15, purple for A17
+    color, ls, label = _model_style(model_name)
+
+    fig = plt.figure(figsize=figsize)
+    gs  = gridspec.GridSpec(3, 2, height_ratios=[2.5, 1.2, 0.8],
+                            hspace=0.42, wspace=0.35)
+
+    for col, site_name in enumerate(sites):
+        if site_name not in apollo_results:
+            continue
+        stats    = apollo_results[site_name]['stats']
+        errors   = apollo_results[site_name]['errors']
+        z_grid   = stats['depth']
+        a_depths = errors['apollo_depths']
+        a_temps  = errors['apollo_temps']
+        residuals = errors['residuals']
+        dot_color = colors[col]
+
+        # ── Row 0: temperature profiles ───────────────────────────────────────
+        ax0 = fig.add_subplot(gs[0, col])
+        ax0.plot(stats['T_mean'], z_grid * 100, color=color, ls=ls,
+                 linewidth=2.5, label=f'{label} (mean)')
+        ax0.fill_betweenx(z_grid * 100, stats['T_min'], stats['T_max'],
+                          color=color, alpha=0.15, label='Diurnal range')
+        ax0.plot(a_temps, a_depths * 100, 'o', color=dot_color,
+                 markersize=9, markeredgewidth=1.5,
+                 markeredgecolor='black', zorder=5,
+                 label=f'{site_name} measured')
+        ax0.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
+        ax0.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
+        ax0.set_title(
+            f'{site_name}\n'
+            f'RMSE {errors["rmse"]:.2f} K  |  Bias {errors["bias"]:+.2f} K',
+            fontsize=12, weight='bold'
+        )
+        ax0.legend(fontsize=9, framealpha=0.9)
+        ax0.grid(True, alpha=0.3)
+        ax0.invert_yaxis()
+
+        # ── Row 1: residual bar chart ─────────────────────────────────────────
+        ax1 = fig.add_subplot(gs[1, col])
+        bar_colors = ['#E74C3C' if r > 0 else '#2471A3' for r in residuals]
+        ax1.barh(a_depths * 100, residuals, height=4,
+                 color=bar_colors, alpha=0.8, edgecolor='black')
+        ax1.axvline(0, color='black', linewidth=1.5)
+        ax1.set_xlabel('Residual (K)', fontsize=10, weight='bold')
+        ax1.set_ylabel('Depth (cm)',   fontsize=10, weight='bold')
+        ax1.set_title('Model − Measured', fontsize=11, weight='bold')
+        ax1.grid(True, alpha=0.3, axis='x')
+        ax1.invert_yaxis()
+
+        # ── Row 2: stats text ─────────────────────────────────────────────────
+        ax2 = fig.add_subplot(gs[2, col])
+        ax2.axis('off')
+        r2 = 1.0 - (np.sum(residuals**2) /
+                    np.sum((a_temps - np.mean(a_temps))**2))
+        info = (f"RMSE {errors['rmse']:.3f} K  |  "
+                f"Bias {errors['bias']:+.3f} K  |  "
+                f"MAE {errors['mae']:.3f} K  |  "
+                f"R² {r2:.3f}   "
+                f"[SUNSCALE {sunscale:.2f}  CHI {chi:.1f}  "
+                f"ALBEDO {albedo:.3f}  Model: {label}]")
+        ax2.text(0.5, 0.5, info, fontsize=9, family='monospace',
+                 ha='center', va='center', transform=ax2.transAxes,
+                 bbox=dict(boxstyle='round', facecolor='wheat',
+                           alpha=0.35, pad=0.6))
+
+    plt.suptitle(f'Apollo 15 & 17 Dual Validation — {label}',
+                 fontsize=14, weight='bold', y=1.01)
     plt.tight_layout()
     return fig
 
