@@ -842,8 +842,10 @@ def surface_temperature_map(elev_m, map_res, target_lat, target_lon,
 
     # Analytical peak temperature (flat terrain, local noon)
     cos_lat = np.maximum(0.005, np.cos(np.radians(lats_local)))
-    T_noon  = ((1.0 - albedo) * S0 * cos_lat[:, None] /
-               (emissivity * _sigma)) ** 0.25
+    T_noon_1d = ((1.0 - albedo) * S0 * cos_lat /
+                 (emissivity * _sigma)) ** 0.25
+    # Tile across longitude columns so T_noon has shape (n_rows, n_cols)
+    T_noon = np.tile(T_noon_1d[:, None], (1, len(lons_local)))
 
     # Night-side minimum (empirical lunar average)
     T_night = np.where(np.abs(lats_local)[:, None] < 60, 95.0, 70.0)
