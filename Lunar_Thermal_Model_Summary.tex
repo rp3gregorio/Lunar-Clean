@@ -527,6 +527,9 @@ The boundary between Layer~1 and Layer~2 is $H$ (default 7\,cm):
 
 where $\rho_s = 1100$\,kg/m$^3$ (surface density, adjustable),
 $L_2 = 0.20$\,m (20\,cm, fixed Layer~2/3 boundary).
+The Layer~1 depth $H \approx 7$\,cm and the Layer~2 reference density
+1700\,kg/m$^3$ are based on Apollo drill-core measurements
+(Carrier et al.\ 1991).
 
 \begin{center}
 \begin{tabular}{llll}
@@ -552,7 +555,11 @@ in density with depth (Hayne et al.\ 2017):
 \end{equation}
 
 with $\rho_s = 1100$\,kg/m$^3$, $\rho_d = 1800$\,kg/m$^3$,
-and $H = 0.07$\,m (global average scale height from Diviner).
+and $H = 0.07$\,m.
+Note that the global best-fit from Hayne et al.\ (2017) is $H = 0.06$\,m;
+we adopt $H = z_1 = 0.07$\,m so that both models share the same
+characteristic compaction depth, isolating the effect of density
+parameterisation rather than the choice of depth scale.
 
 Solid conductivity follows the same exponential shape:
 
@@ -564,7 +571,7 @@ Solid conductivity follows the same exponential shape:
 \end{equation}
 
 with $k_{\mathrm{surf}} = 7.4\times10^{-4}$\,W/(m\,K) and
-$k_{\mathrm{deep}} = 3.4\times10^{-3}$\,W/(m\,K).
+$k_{\mathrm{deep}} = 3.8\times10^{-3}$\,W/(m\,K) \citep{Hayne2017}.
 
 %% ============================================================
 \section{Boundary Conditions}
@@ -594,7 +601,7 @@ where:
   \item $\Delta z$ -- spacing between nodes (5\,mm)
   \item $\varepsilon = 0.95$ -- \textbf{emissivity} (how efficiently
         the surface radiates as a blackbody)
-  \item $\sigma = 5.670\times10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ --
+  \item $\sigma = 5.6704\times10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ --
         Stefan-Boltzmann constant
 \end{itemize}
 
@@ -719,7 +726,7 @@ discarding the earlier spin-up.
 \midrule
 \multicolumn{4}{l}{\itshape Physical constants (never change)} \\[2pt]
 S0         & $S_0$     & 1361\,W\,m$^{-2}$               & Solar constant at 1\,AU \\
-sigma      & $\sigma$  & $5.670\!\times\!10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ & Stefan-Boltzmann \\
+sigma      & $\sigma$  & $5.6704\!\times\!10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ & Stefan-Boltzmann \\
 Q\_basal   & $Q_b$     & 0.018\,W\,m$^{-2}$              & Basal heat flux (Apollo HFE) \\
 R\_MOON    & $R_{\Moon}$& 1{,}737{,}400\,m               & Moon mean radius \\
 LUNAR\_DAY & $T_{\odot}$& 2{,}551{,}392\,s               & 29.53 Earth days \\[6pt]
@@ -728,14 +735,14 @@ SUNSCALE   & $S_{\rm sc}$ & 1.10                        & Solar flux multiplier 
 ALBEDO     & $A$          & 0.09                        & Fraction of sunlight reflected \\
 EMISSIVITY & $\varepsilon$& 0.95                        & IR radiation efficiency \\
 CHI        & $\chi$       & 2.7                         & Radiative conductivity exponent \\
-H\_PARAM   & $H$          & 0.07\,m                     & Layer-1 thickness / scale height \\
+H\_PARAM   & $H$          & 0.07\,m                     & Layer-1 thickness / scale height (Apollo drill data; Carrier et al.\ 1991) \\
 NDAYS      & --           & 3                           & Lunar days to simulate \\
 T\_INIT    & $T_0$        & 250\,K                      & Initial uniform temperature \\[6pt]
 \multicolumn{4}{l}{\itshape Regolith properties} \\[2pt]
 rho\_s     & $\rho_s$     & 1100\,kg\,m$^{-3}$          & Surface density (adjustable) \\
-rho\_d     & $\rho_d$     & 1800\,kg\,m$^{-3}$          & Deep density \\
+rho\_d     & $\rho_d$     & 1800\,kg\,m$^{-3}$          & Deep density (Carrier et al.\ 1991) \\
 k\_surf    & $k_{\rm surf}$& $7.4\!\times\!10^{-4}$\,W/(m\,K) & Surface conductivity \\
-k\_deep    & $k_{\rm deep}$& $3.4\!\times\!10^{-3}$\,W/(m\,K) & Deep conductivity \\
+k\_deep    & $k_{\rm deep}$& $3.8\!\times\!10^{-3}$\,W/(m\,K) & Deep conductivity \citep{Hayne2017} \\
 T\_ref     & $T_{\rm ref}$ & 350\,K                    & Reference T for $\chi$ term \\[6pt]
 \multicolumn{4}{l}{\itshape Numerical grid} \\[2pt]
 DZ\_FINE   & $\Delta z_f$  & 5\,mm    & Node spacing near surface \\
@@ -903,6 +910,12 @@ The complete simulation runs in this order:
 \section{References}
 
 \begin{itemize}[leftmargin=1.5em, itemsep=5pt]
+
+  \item Carrier, W.\,D., III, Olhoeft, G.\,R., \& Mendell, W.\ (1991).
+        ``Physical Properties of the Lunar Surface.''
+        In \textit{Lunar Sourcebook: A User's Guide to the Moon},
+        G.\,H.\ Heiken, D.\,T.\ Vaniman, \& B.\,M.\ French (eds.),
+        Cambridge University Press, pp.\ 475--594.
 
   \item Hayne, P.\,O., et al.\ (2017).
         ``Global Regolith Thermophysical Properties of the Moon

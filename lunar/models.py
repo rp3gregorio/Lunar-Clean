@@ -110,10 +110,15 @@ def k_solid_discrete(z):
 
 @njit(cache=True, fastmath=True, inline='always')
 def density_hayne(z):
-    """Density (kg/m³) for the Hayne 2017 exponential model (H = 7 cm fixed)."""
+    """Density (kg/m³) for the Hayne 2017 exponential model (H = 7 cm fixed).
+
+    Note: H=0.07 m matches z1 (the discrete-model layer-1 depth) so that
+    both models share the same characteristic compaction depth for a fair
+    comparison.  The Hayne et al. (2017) global best-fit is H=0.06 m.
+    """
     rho_s = 1100.0
     rho_d = 1800.0
-    H     = 0.07
+    H     = 0.07  # H=0.07 m here; Hayne 2017 global best-fit is H=0.06 m
     return rho_d - (rho_d - rho_s) * np.exp(-z / H)
 
 
@@ -125,7 +130,7 @@ def k_solid_hayne(z):
     H     = 0.07
     rho   = rho_d - (rho_d - rho_s) * np.exp(-z / H)
     k_surf = 7.4e-4   # W/m/K at surface   (from Hayne et al. 2017)
-    k_deep = 3.4e-3   # W/m/K at ~1 m depth
+    k_deep = 3.8e-3   # W/m/K at ~1 m depth (Hayne et al. 2017, Table 1)
     frac   = (rho - rho_s) / (rho_d - rho_s)
     return k_surf + (k_deep - k_surf) * frac
 
@@ -242,7 +247,7 @@ def k_solid_hayne_py(z, H=None):
     h = H if H is not None else _HAYNE_H
     rho_s, rho_d = 1100.0, 1800.0
     rho   = rho_d - (rho_d - rho_s) * np.exp(-z / h)
-    k_surf, k_deep = 7.4e-4, 3.4e-3
+    k_surf, k_deep = 7.4e-4, 3.8e-3   # k_deep from Hayne et al. 2017, Table 1
     return k_surf + (k_deep - k_surf) * (rho - rho_s) / (rho_d - rho_s)
 
 
