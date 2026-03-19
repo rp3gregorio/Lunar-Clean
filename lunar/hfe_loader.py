@@ -111,6 +111,11 @@ _DISCREPANCY_REGIONS = {
 }
 
 
+# Public aliases — import these rather than the private underscored names
+STABLE_WINDOWS      = _STABLE_WINDOWS
+DISCREPANCY_REGIONS = _DISCREPANCY_REGIONS
+
+
 def load_probe(filepath):
     """
     Load a single HFE probe .tab file (flagged rows are discarded).

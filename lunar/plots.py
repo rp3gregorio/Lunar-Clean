@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
+from lunar.hfe_loader import STABLE_WINDOWS, DISCREPANCY_REGIONS
 
 # ── Shared style — publication quality ───────────────────────────────────────
 import matplotlib as _mpl
@@ -374,9 +375,8 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                      label=f'{site_name} TC — cable (diurnal zone)')
 
         # ── Discrepancy-exclusion annotation ──────────────────────────────────
-        from lunar.hfe_loader import _STABLE_WINDOWS, _DISCREPANCY_REGIONS
-        _sw   = _STABLE_WINDOWS.get(site_name, [])
-        _dr   = _DISCREPANCY_REGIONS.get(site_name, {})
+        _sw   = STABLE_WINDOWS.get(site_name, [])
+        _dr   = DISCREPANCY_REGIONS.get(site_name, {})
         _excl = []
         for _pi, _regions in _dr.items():
             _win = _sw[_pi] if _pi < len(_sw) else None
@@ -399,12 +399,18 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         ax0.set_xlabel('Temperature (K)', fontsize=12, weight='bold')
         ax0.set_ylabel('Depth (cm)',       fontsize=12, weight='bold')
         ax0.set_ylim(y_max_cm, 0)          # zoomed — surface at top
+        # Build a compact "stable window used" string for the title
+        _win_strs = [f'P{i+1}: day {ws}–{we}'
+                     for i, (ws, we) in enumerate(_sw)]
+        _win_note = '  |  Stable window — ' + ',  '.join(_win_strs)
+
         ax0.set_title(
             f'{site_name}\n'
-            f'RMSE {errors["rmse"]:.2f} K  |  Bias {errors["bias"]:+.2f} K',
-            fontsize=13, weight='bold', pad=8,
+            f'RMSE {errors["rmse"]:.2f} K  |  Bias {errors["bias"]:+.2f} K'
+            f'{_win_note}',
+            fontsize=10, weight='bold', pad=8,
         )
-        ax0.legend(fontsize=9, framealpha=0.9, loc='lower left')
+        ax0.legend(fontsize=8.5, framealpha=0.9, loc='lower left')
 
         # ── Row 1: residual lollipop chart ────────────────────────────────────
         ax1 = fig.add_subplot(gs[1, col])
