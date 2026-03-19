@@ -222,7 +222,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
              label=f'{site_name} measured', zorder=5)
 
     max_meas_cm = float(np.max(a_depths * 100))
-    y_max_cm    = max(30.0, max_meas_cm * 2.2)
+    y_max_cm    = min(320.0, max(150.0, max_meas_cm * 1.6))
     mask = z_grid * 100 <= y_max_cm * 1.05
 
     ax1.set_xlabel('Temperature (K)', fontsize=12, weight='bold')
@@ -316,10 +316,10 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         dot_color = colors[col]
 
         # ── Depth axis: zoom to the measurement region with context ───────────
-        # Apollo 15 sensors: 8–14 cm  |  Apollo 17 sensors: 13–23 cm
-        # Show down to 2× the deepest sensor so the profile shape is visible.
+        # Apollo 15 sensors: 84–139 cm  |  Apollo 17 sensors: 130–234 cm
+        # Show down to 1.6× the deepest sensor so the shape is visible.
         max_meas_cm = float(np.max(a_depths * 100))
-        y_max_cm    = max(30.0, max_meas_cm * 2.2)   # at least 30 cm
+        y_max_cm    = min(320.0, max(150.0, max_meas_cm * 1.6))
 
         # ── Row 0: temperature profiles ───────────────────────────────────────
         ax0 = fig.add_subplot(gs[0, col])
@@ -548,16 +548,14 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     # Diverging-friendly depth colormap: shallow=yellow, deep=indigo
     _depth_cmap = plt.get_cmap('viridis_r')
 
-    # Collect overall depth range for shared colorbar
-    all_depths_global = sorted({d['depth_mm']
+    # Collect overall depth range for shared colorbar (in cm)
+    all_depths_global = sorted({d['depth_cm']
                                  for probe in probes
                                  for d in probe.values()})
     g_dmin = all_depths_global[0]
     g_dmax = all_depths_global[-1]
 
     for ax, probe in zip(axes, probes):
-        all_depths = sorted({d['depth_mm'] for d in probe.values()})
-        d_min, d_max = all_depths[0], all_depths[-1]
         norm = Normalize(vmin=g_dmin, vmax=g_dmax)
 
         t_stable_final = None
@@ -565,11 +563,11 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
 
         # --- plot each sensor ---
         for sensor, data in sorted(probe.items(),
-                                   key=lambda kv: kv[1]['depth_mm']):
+                                   key=lambda kv: kv[1]['depth_cm']):
             times = data['times']
             temps = data['temps']
-            d_mm  = data['depth_mm']
-            color = _depth_cmap(norm(d_mm))
+            d_cm  = data['depth_cm']
+            color = _depth_cmap(norm(d_cm))
 
             t_num = np.array([t.timestamp() / 86400 for t in times])
             t0    = t_num[0]
@@ -578,13 +576,13 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
             t_stable = t_num[-n_stable]
 
-            # Thicker line for deep (equilibrium) sensors
-            lw = 1.5 if d_mm >= 80 else 1.0
+            # Thicker line for deep (equilibrium) sensors below diurnal zone
+            lw = 1.6 if d_cm >= 80 else 1.0
 
             ax.plot(t_num, temps, lw=lw, color=color, alpha=0.92,
-                    label=f'{sensor}  ({d_mm} mm)')
+                    label=f'{sensor}  ({d_cm} cm)')
 
-            # Track stable window bounds
+            # Track stable window bounds (use earliest stable start)
             if t_stable_final is None or t_stable < t_stable_final:
                 t_stable_final = t_stable
             if t_end_final is None or t_num[-1] > t_end_final:
@@ -595,29 +593,30 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
                    alpha=0.13, color='#2ECC71',
                    label='Stable window (validation)')
         ax.axvline(t_stable_final, color='#1E8449', ls='--',
-                   lw=1.4, alpha=0.75, zorder=3)
-        ax.axvline(t_end_final,   color='#1E8449', ls=':',
-                   lw=1.2, alpha=0.55, zorder=3)
+                   lw=1.4, alpha=0.80, zorder=3)
+        ax.axvline(t_end_final,    color='#1E8449', ls=':',
+                   lw=1.2, alpha=0.60, zorder=3)
 
         probe_label = next(iter(probe.values()))['probe_label']
         ax.set_title(probe_label, fontsize=13, weight='bold', pad=8)
         ax.set_xlabel('Days since emplacement', fontsize=12, weight='bold')
         ax.set_ylabel('Temperature (K)',        fontsize=12, weight='bold')
 
-        # Legend: right column for deeper sensors (more relevant)
-        leg = ax.legend(fontsize=7.5, ncol=1,
-                        loc='upper right', framealpha=0.92,
+        leg = ax.legend(fontsize=8, ncol=1,
+                        loc='upper right', framealpha=0.93,
                         edgecolor='#cccccc',
-                        handlelength=1.6)
+                        handlelength=1.8)
         for line in leg.get_lines():
-            line.set_linewidth(2.0)
+            line.set_linewidth(2.2)
 
-    # Shared colorbar across all probe panels
+    # ── Colorbar on the far right of the figure — explicit placement ──────────
+    fig.subplots_adjust(right=0.87)
+    cbar_ax = fig.add_axes([0.89, 0.15, 0.016, 0.68])
     sm = ScalarMappable(cmap=_depth_cmap,
                         norm=Normalize(vmin=g_dmin, vmax=g_dmax))
     sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, shrink=0.75, pad=0.02, aspect=22)
-    cbar.set_label('Sensor depth (mm)', fontsize=11, weight='bold')
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label('Sensor depth (cm)', fontsize=11, weight='bold', labelpad=10)
     cbar.ax.tick_params(labelsize=9)
 
     fig.suptitle(
@@ -625,7 +624,6 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
         'Green band = stable equilibrium window used for validation',
         fontsize=13, weight='bold', y=1.02,
     )
-    plt.tight_layout()
     return fig
 
 

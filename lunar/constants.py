@@ -34,18 +34,27 @@ DEPTH_MAX  = 3.0     # Total model depth (m)
 # The last 25 % of each sensor's record is used (after the drilling transient
 # has fully dissipated).  Source: hfe_loader.get_equilibrium_temps()
 #
+# Depths are in metres.  The 'depth' column in the .tab files is in centimetres;
+# confirmed against NASA/NSSDCA documentation (Langseth et al. 1972, 1976):
+#   A15 Probe 1 reached 1.39 m, Probe 2 reached 0.97 m.
+#   A17 both probes reached ≈ 2.34 m.
+#
 # If the data files are unavailable the fallback tuples below are used.
 _APOLLO_15_FALLBACK = [
-    (0.035, 252.8), (0.045, 252.8), (0.049, 252.9), (0.059, 252.9),
-    (0.073, 252.9), (0.084, 253.0), (0.087, 252.9), (0.091, 253.2),
-    (0.097, 253.2), (0.101, 253.2), (0.129, 253.3), (0.139, 253.5),
+    # (depth_m, T_K) — depths from published sensor positions (Langseth 1976)
+    # Shallow sensors (< 0.80 m) are excluded by min_depth_cm=80 filter
+    (0.35, 252.8), (0.45, 252.8), (0.49, 252.9), (0.59, 252.9),
+    (0.73, 252.9), (0.84, 253.0), (0.87, 252.9), (0.91, 253.2),
+    (0.97, 253.2), (1.01, 253.2), (1.29, 253.3), (1.39, 253.5),
 ]
 _APOLLO_17_FALLBACK = [
-    (0.014, 255.0), (0.015, 255.0), (0.066, 255.8), (0.067, 255.8),
-    (0.130, 256.1), (0.131, 256.1), (0.140, 256.2), (0.167, 256.3),
-    (0.169, 256.3), (0.177, 256.4), (0.178, 256.4), (0.185, 256.4),
-    (0.186, 256.4), (0.195, 256.5), (0.196, 256.5), (0.223, 256.6),
-    (0.224, 256.6), (0.233, 256.7), (0.234, 256.7),
+    # (depth_m, T_K) — depths from published sensor positions (Langseth 1976)
+    # Shallow cable sensors (< 0.80 m) excluded by min_depth_cm=80 filter
+    (0.14, 255.0), (0.15, 255.0), (0.66, 255.8), (0.67, 255.8),
+    (1.30, 256.1), (1.31, 256.1), (1.40, 256.2), (1.67, 256.3),
+    (1.69, 256.3), (1.77, 256.4), (1.78, 256.4), (1.85, 256.4),
+    (1.86, 256.4), (1.95, 256.5), (1.96, 256.5), (2.23, 256.6),
+    (2.24, 256.6), (2.33, 256.7), (2.34, 256.7),
 ]
 
 def _load_apollo_data():

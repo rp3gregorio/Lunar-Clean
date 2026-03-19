@@ -2,17 +2,22 @@
 hfe_loader.py — Load and process Apollo Heat Flow Experiment (HFE) time-series data.
 
 Four probe files (two per mission):
-    data/a15p1_depth.tab   Apollo 15 Probe 1  (depths 35–139 mm)
-    data/a15p2_depth.tab   Apollo 15 Probe 2  (depths 49–97 mm)
-    data/a17p1_depth.tab   Apollo 17 Probe 1  (depths 14–233 mm)
-    data/a17p2_depth.tab   Apollo 17 Probe 2  (depths 15–234 mm)
+    data/a15p1_depth.tab   Apollo 15 Probe 1  (depths 35–139 cm; probe reached 1.4 m)
+    data/a15p2_depth.tab   Apollo 15 Probe 2  (depths 49–97 cm;  probe reached 1.0 m)
+    data/a17p1_depth.tab   Apollo 17 Probe 1  (depths 14–233 cm; probe reached 2.3 m)
+    data/a17p2_depth.tab   Apollo 17 Probe 2  (depths 15–234 cm; probe reached 2.3 m)
 
 Each file is CSV with columns: Time, T, sensor, depth, flags
+
+NOTE: The 'depth' column is in **centimetres**.  Confirmed against published
+NASA/NSSDCA documentation (Langseth et al. 1972, 1976):
+    Apollo 17 TC13 = 66 cm, TG11A = 130 cm, TG12B = 233 cm  (exact match).
+    Apollo 15 Probe 1 max depth = 139 cm ≈ 1.39 m  (matches reported 1.4 m).
 
 Sensor naming
     TG = Gradient-bridge thermocouples (paired: A upper, B lower)
     TR = Reference thermocouples (absolute T at depth)
-    TC = Cable thermocouples (Apollo 17 only, very shallow: 14–67 mm)
+    TC = Cable thermocouples (very shallow: 14–67 cm, diurnally active)
 
 Public API
     load_probe(filepath)          → {sensor: dict} with full time-series
@@ -46,7 +51,7 @@ def load_probe(filepath):
     -------
     dict  {sensor_name: {'times': np.ndarray[datetime],
                          'temps': np.ndarray[float, K],
-                         'depth_mm': int}}
+                         'depth_cm': int}}   ← depth in centimetres
     """
     by_sensor = {}
     with open(filepath) as fh:
@@ -56,9 +61,9 @@ def load_probe(filepath):
             s = row['sensor']
             t = datetime.datetime.fromisoformat(row['Time'].replace('Z', '+00:00'))
             T = float(row['T'])
-            d = int(row['depth'])
+            d = int(row['depth'])          # centimetres
             if s not in by_sensor:
-                by_sensor[s] = {'times': [], 'temps': [], 'depth_mm': d}
+                by_sensor[s] = {'times': [], 'temps': [], 'depth_cm': d}
             by_sensor[s]['times'].append(t)
             by_sensor[s]['temps'].append(T)
 
@@ -82,29 +87,38 @@ def load_site(site_name):
 
 
 def get_equilibrium_temps(site_name, stable_fraction=_STABLE_FRACTION,
-                          min_depth_mm=80):
+                          min_depth_cm=80):
     """
     Derive equilibrium temperature at each depth from the *stable tail* of
     each sensor's time-series (last *stable_fraction* of readings).
 
-    Only sensors at or below *min_depth_mm* are included so that very shallow
-    cable (TC) sensors — which remain within the diurnally-driven zone and
-    never reach a single equilibrium — do not contaminate the validation set.
+    Selection method
+    ----------------
+    For each sensor, the **median** of its last *stable_fraction* (25 %) of
+    readings is used as the equilibrium temperature.  The median is robust
+    to occasional noise spikes in the tail.  Where multiple sensors share
+    the same nominal depth (e.g. paired gradient-bridge A/B elements),
+    their stable medians are averaged to give a single value per depth.
 
-    Where multiple sensors share the same depth their stable medians are
-    averaged.
+    Depth filter
+    ------------
+    Only sensors at or below *min_depth_cm* (default 80 cm) are included.
+    This excludes the cable (TC) thermocouples that sit in the diurnally-
+    driven zone and never fully equilibrate to the geothermal gradient.
+    The lunar diurnal skin depth is ≈ 50 cm, so 80 cm gives a conservative
+    margin below it.
 
     Returns
     -------
     list of (depth_m, T_K) tuples sorted by ascending depth.
     """
     probes = load_site(site_name)
-    depth_buckets = {}  # depth_mm → [median_T, ...]
+    depth_buckets = {}  # depth_cm → [median_T, ...]
 
     for probe in probes:
         for sensor, data in probe.items():
-            d_mm = data['depth_mm']
-            if d_mm < min_depth_mm:
+            d_cm = data['depth_cm']
+            if d_cm < min_depth_cm:
                 continue          # skip diurnally-active shallow sensors
             temps = data['temps']
             n = len(temps)
@@ -112,10 +126,11 @@ def get_equilibrium_temps(site_name, stable_fraction=_STABLE_FRACTION,
                 continue
             n_stable = max(1, int(n * stable_fraction))
             median_T = float(np.median(temps[-n_stable:]))
-            depth_buckets.setdefault(d_mm, []).append(median_T)
+            depth_buckets.setdefault(d_cm, []).append(median_T)
 
-    return [(d_mm / 1000.0, float(np.mean(Ts)))
-            for d_mm, Ts in sorted(depth_buckets.items())]
+    # Convert cm → m for the returned values
+    return [(d_cm / 100.0, float(np.mean(Ts)))
+            for d_cm, Ts in sorted(depth_buckets.items())]
 
 
 def get_timeseries(site_name):
