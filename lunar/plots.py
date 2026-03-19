@@ -464,6 +464,222 @@ def _model_labels_get(name):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5. HFE TIME-SERIES  (temperature over probe lifetime)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hfe_timeseries(site_name, figsize=(14, 8)):
+    """
+    Plot the full temperature time-series for every sensor at *site_name*,
+    one subplot per probe.
+
+    Highlights
+    ----------
+    - The early high-T period (drilling thermal disturbance / residual heat)
+    - A vertical dashed line marking the start of the stable equilibrium window
+      (last 25 % of each probe's record — used for validation)
+
+    Parameters
+    ----------
+    site_name : 'Apollo 15' or 'Apollo 17'
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from lunar.hfe_loader import get_timeseries, _STABLE_FRACTION
+    import datetime
+
+    probes = get_timeseries(site_name)
+    n_probes = len(probes)
+
+    fig, axes = plt.subplots(1, n_probes, figsize=figsize,
+                             sharey=False, squeeze=False)
+    axes = axes[0]
+
+    _depth_cmap = plt.get_cmap('plasma_r')
+
+    for ax, probe in zip(axes, probes):
+        all_depths = sorted({d['depth_mm'] for d in probe.values()})
+        d_min, d_max = all_depths[0], all_depths[-1]
+        norm = Normalize(vmin=d_min, vmax=d_max)
+
+        t_end_global = None  # latest timestamp in this probe
+        for data in probe.values():
+            if t_end_global is None or data['times'][-1] > t_end_global:
+                t_end_global = data['times'][-1]
+            if data['times'][0] > t_end_global:
+                t_end_global = data['times'][0]
+
+        for sensor, data in sorted(probe.items(),
+                                   key=lambda kv: kv[1]['depth_mm']):
+            times = data['times']
+            temps = data['temps']
+            d_mm  = data['depth_mm']
+            color = _depth_cmap(norm(d_mm))
+
+            # Convert datetimes to matplotlib floats for plotting
+            t_num = np.array([t.timestamp() / 86400 for t in times])
+            t0    = t_num[0]
+            t_num -= t0       # days since first reading
+
+            n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
+            t_stable = t_num[-n_stable]   # x-coordinate of stable cutoff
+
+            ax.plot(t_num, temps, lw=0.8, color=color,
+                    label=f'{sensor}  ({d_mm} mm)')
+            ax.axvline(t_stable, color='gray', ls=':', lw=1.0, alpha=0.7)
+
+        # Stable-window annotation (once per probe)
+        ax.axvspan(t_stable, t_num[-1], alpha=0.08, color='green',
+                   label='Stable window (validation)')
+
+        probe_label = next(iter(probe.values()))['probe_label']
+        ax.set_title(f'{probe_label}', fontsize=12, weight='bold')
+        ax.set_xlabel('Days since emplacement', fontsize=10)
+        ax.set_ylabel('Temperature (K)', fontsize=10)
+        ax.legend(fontsize=7, ncol=1, loc='upper right')
+        ax.grid(True, alpha=0.25)
+
+    # Shared depth colorbar
+    sm = ScalarMappable(cmap=_depth_cmap,
+                        norm=Normalize(vmin=all_depths[0],
+                                       vmax=all_depths[-1]))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, shrink=0.7, pad=0.02)
+    cbar.set_label('Sensor depth (mm)', fontsize=10)
+
+    fig.suptitle(f'{site_name} — HFE Probe Temperature History\n'
+                 'Green band = stable equilibrium window used for validation',
+                 fontsize=13, weight='bold', y=1.01)
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. HFE THERMAL SHUNTING EVIDENCE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
+    """
+    Evidence of the thermal disturbance (drilling residual heat + thermal
+    shunting along the probe casing) in the HFE data.
+
+    Left panel  — Temperature–depth profiles at several time snapshots.
+                  Shortly after emplacement the profile is highly disturbed;
+                  it converges toward the true geothermal gradient over months.
+
+    Right panel — Temperature difference between gradient-bridge A and B
+                  sensors (ΔT = T_A − T_B) over time for every TG bridge.
+                  Shunting reduces the apparent gradient: the initial large ΔT
+                  shrinks rapidly during the transient recovery, then settles to
+                  a residual offset that reflects the true heat flow signal
+                  modified by the probe's thermal conductance.
+
+    Parameters
+    ----------
+    site_name   : 'Apollo 15' or 'Apollo 17'
+    n_snapshots : number of time snapshots for the T-depth profile
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from lunar.hfe_loader import get_timeseries
+
+    probes = get_timeseries(site_name)
+    fig, (ax_prof, ax_grad) = plt.subplots(1, 2, figsize=figsize)
+
+    # ── Left: T-depth profiles at successive snapshots ────────────────────────
+    snap_cmap  = plt.get_cmap('viridis')
+    all_depths_all = []  # collect across probes
+
+    for probe in probes:
+        for data in probe.values():
+            all_depths_all.append(data['depth_mm'])
+
+    # Build a time-indexed merged view: {timestamp: {depth_mm: T}}
+    from collections import defaultdict
+    ts_index = defaultdict(dict)
+    for probe in probes:
+        for sensor, data in probe.items():
+            d_mm = data['depth_mm']
+            for t, T in zip(data['times'], data['temps']):
+                ts_index[t][d_mm] = T
+
+    # Sort all unique timestamps
+    all_times = sorted(ts_index.keys())
+    n_t = len(all_times)
+    snapshot_indices = [int(i * (n_t - 1) / (n_snapshots - 1))
+                        for i in range(n_snapshots)]
+
+    for snap_i, t_idx in enumerate(snapshot_indices):
+        t_snap = all_times[t_idx]
+        day    = (t_snap - all_times[0]).total_seconds() / 86400
+        profile = ts_index[t_snap]
+        depths  = sorted(profile.keys())
+        temps   = [profile[d] for d in depths]
+        color   = snap_cmap(snap_i / max(1, n_snapshots - 1))
+        lbl     = (f'Day {day:.0f}' if day > 0 else 'Emplacement')
+        ax_prof.plot(temps, [d / 10 for d in depths],  # depth in cm
+                     'o-', color=color, lw=1.5, ms=5, label=lbl)
+
+    ax_prof.invert_yaxis()
+    ax_prof.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
+    ax_prof.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
+    ax_prof.set_title('T–Depth Profile at Time Snapshots\n'
+                      '(disturbance convergence)', fontsize=11, weight='bold')
+    ax_prof.legend(fontsize=9)
+    ax_prof.grid(True, alpha=0.3)
+
+    # ── Right: ΔT between bridge A and B sensors over time ───────────────────
+    grad_cmap  = plt.get_cmap('tab10')
+    bridge_idx = 0
+
+    for probe in probes:
+        # Identify TG bridges: pairs sharing the same numeric id (e.g. TG11 → A,B)
+        tg_sensors = {s: d for s, d in probe.items() if s.startswith('TG')}
+        # Group by bridge root (everything except trailing A/B)
+        bridges = defaultdict(dict)
+        for s, data in tg_sensors.items():
+            root = s[:-1]   # e.g. 'TG12A' → 'TG12'
+            ab   = s[-1]    # 'A' or 'B'
+            bridges[root][ab] = data
+
+        for bridge_name, ab_dict in sorted(bridges.items()):
+            if 'A' not in ab_dict or 'B' not in ab_dict:
+                continue
+            dA, dB = ab_dict['A'], ab_dict['B']
+            # Align on common timestamps (inner join via dict)
+            tA_map = {t: T for t, T in zip(dA['times'], dA['temps'])}
+            tB_map = {t: T for t, T in zip(dB['times'], dB['temps'])}
+            common = sorted(set(tA_map) & set(tB_map))
+            if not common:
+                continue
+            t0     = common[0]
+            days   = np.array([(t - t0).total_seconds() / 86400
+                                for t in common])
+            delta  = np.array([tA_map[t] - tB_map[t] for t in common])
+            color  = grad_cmap(bridge_idx % 10)
+            depth_label = f'{dA["depth_mm"]}–{dB["depth_mm"]} mm'
+            ax_grad.plot(days, delta, lw=0.9, color=color,
+                         label=f'{bridge_name}  ({depth_label})')
+            bridge_idx += 1
+
+    ax_grad.axhline(0, color='k', ls='--', lw=0.8)
+    ax_grad.set_xlabel('Days since emplacement', fontsize=11, weight='bold')
+    ax_grad.set_ylabel('ΔT  (T_A − T_B)  [K]', fontsize=11, weight='bold')
+    ax_grad.set_title('Gradient-Bridge ΔT Over Time\n'
+                      '(thermal shunting signature)', fontsize=11, weight='bold')
+    ax_grad.legend(fontsize=8)
+    ax_grad.grid(True, alpha=0.3)
+
+    fig.suptitle(f'{site_name} — HFE Thermal Disturbance & Shunting Evidence',
+                 fontsize=13, weight='bold')
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 7. LOCAL TERRAIN MAP  (DEM overview around target)
 # ─────────────────────────────────────────────────────────────────────────────
 
