@@ -598,8 +598,6 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
         'TC': (':',  0.9, 0.40),   # dotted, thinner, dim
     }
 
-    _legend_type_added = set()   # avoid duplicate legend entries for type markers
-
     for probe_idx, (ax, probe, pw) in enumerate(zip(axes, probes, probe_windows)):
         norm = Normalize(vmin=g_dmin, vmax=g_dmax)
 
@@ -620,14 +618,13 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             t_num = t_num - t0        # days since emplacement
 
             # Sensor type from two-letter prefix
+            # TG = official gradient-bridge (Langseth et al. 1976 primary science sensors)
+            # TR = supplementary reference thermometer (differential, not gradient)
+            # TC = cable thermocouple (shallow/diurnal zone, not used for heat flow)
             prefix = ''.join(c for c in sensor if c.isalpha())[:2]
             ls, lw, alpha = _style.get(prefix, ('-', 1.2, 0.80))
-
-            # Label: sensor name + depth + type annotation on first occurrence
-            type_labels = {'TG': 'official', 'TR': 'supplementary', 'TC': 'shallow/diurnal'}
-            type_tag = f' [{type_labels.get(prefix, prefix)}]' if prefix not in _legend_type_added else ''
-            if type_tag:
-                _legend_type_added.add(prefix)
+            type_labels = {'TG': 'official', 'TR': 'supplementary', 'TC': 'non-official'}
+            type_tag = f' [{type_labels.get(prefix, prefix)}]'
 
             ax.plot(t_num, temps, lw=lw, ls=ls, color=color, alpha=alpha,
                     label=f'{sensor}  ({d_cm} cm){type_tag}')

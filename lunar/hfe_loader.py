@@ -44,17 +44,27 @@ _STABLE_FRACTION = 0.25
 
 # Explicit stable windows (days since probe emplacement) used for both
 # equilibrium-temperature averaging and green-band visualisation.
-# Windows are chosen to exclude:
-#   A15 P1 — emplacement transient (0–80 d) and disturbance events; flat-line
-#             artefact after day ~1370
-#   A15 P2 — emplacement transient (0–120 d); disturbance at day ~526;
-#             TG22A disturbance at day ~1249 → window ends at 1240
-#   A17 P1 — emplacement transient (0–60 d); TG11B step at day 862
-#   A17 P2 — emplacement transient (0–60 d); disturbances at 503, 714, 852
-#             → window starts at 530 (27 days after the 503 event)
+# Windows are chosen to exclude ALL known disturbances (see _DISCREPANCY_REGIONS):
+#
+#   A15 P1 — window [990, 1240]:
+#               Start pushed to 990 to exclude TG11A disturbances at days
+#               820–845, 912–935, 967–990 which occur inside the earlier [840,…]
+#               window.  End set to 1240 to exclude the day-1242 event.
+#               This leaves a clean 250-day window for deep-sensor equilibration.
+#
+#   A15 P2 — window [840, 1240]:
+#               Emplacement transient clears by ~day 120; next disturbance not
+#               until day 518–540 (before window), and day-1242 event (after).
+#
+#   A17 P1 — window [520, 700]: after emplacement transient, before TG11B
+#               step at day 862.
+#
+#   A17 P2 — window [530, 700]: 27 days after the day-503/504 TG21A/B step;
+#               ends before TG21A disturbance at day 714.
+#
 # Format: [(probe1_start, probe1_end), (probe2_start, probe2_end)]
 _STABLE_WINDOWS = {
-    'Apollo 15': [(840, 1370), (840, 1240)],
+    'Apollo 15': [(990, 1240), (840, 1240)],
     'Apollo 17': [(520,  700), (530,  700)],
 }
 
