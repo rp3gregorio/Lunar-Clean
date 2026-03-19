@@ -549,11 +549,16 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     -------
     matplotlib.figure.Figure
     """
-    from lunar.hfe_loader import get_timeseries, _STABLE_WINDOWS
+    import lunar.hfe_loader as _hfl
+    from lunar.hfe_loader import get_timeseries
+
+    # Use explicit stable windows if available (updated hfe_loader);
+    # fall back to last-25% heuristic so older cached modules keep working.
+    _STABLE_WINDOWS = getattr(_hfl, '_STABLE_WINDOWS', None)
+    _STABLE_FRACTION = getattr(_hfl, '_STABLE_FRACTION', 0.25)
 
     probes   = get_timeseries(site_name)
     n_probes = len(probes)
-    windows  = _STABLE_WINDOWS[site_name]   # [(start, end), ...] per probe
 
     fig, axes = plt.subplots(1, n_probes, figsize=figsize,
                              sharey=False, squeeze=False)
@@ -569,8 +574,19 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     g_dmin = all_depths_global[0]
     g_dmax = all_depths_global[-1]
 
-    for ax, probe, (win_start, win_end) in zip(axes, probes, windows):
+    # Build per-probe (win_start, win_end) — use explicit dict when available,
+    # otherwise fall back to last-fraction heuristic (needs a first-pass read).
+    probe_windows = (
+        _STABLE_WINDOWS[site_name]
+        if _STABLE_WINDOWS and site_name in _STABLE_WINDOWS
+        else [None] * n_probes
+    )
+
+    for ax, probe, pw in zip(axes, probes, probe_windows):
         norm = Normalize(vmin=g_dmin, vmax=g_dmax)
+
+        t_stable_final = None
+        t_end_final    = None
 
         # --- plot each sensor ---
         for sensor, data in sorted(probe.items(),
@@ -590,8 +606,18 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             ax.plot(t_num, temps, lw=lw, color=color, alpha=0.92,
                     label=f'{sensor}  ({d_cm} cm)')
 
+            # Track fallback window bounds (earliest stable start)
+            if pw is None:
+                n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
+                t_s = t_num[-n_stable]
+                if t_stable_final is None or t_s < t_stable_final:
+                    t_stable_final = t_s
+                if t_end_final is None or t_num[-1] > t_end_final:
+                    t_end_final = t_num[-1]
+
+        win_start, win_end = pw if pw is not None else (t_stable_final, t_end_final)
+
         # Stable-window shading and boundary lines (once per probe)
-        # Uses explicit windows from _STABLE_WINDOWS (excludes flat-line artefacts)
         ax.axvspan(win_start, win_end,
                    alpha=0.13, color='#2ECC71',
                    label='Stable window (validation)')
