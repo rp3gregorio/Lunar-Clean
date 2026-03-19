@@ -26,7 +26,6 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-from lunar.hfe_loader import STABLE_WINDOWS, DISCREPANCY_REGIONS
 
 # ── Shared style — publication quality ───────────────────────────────────────
 import matplotlib as _mpl
@@ -375,6 +374,7 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                      label=f'{site_name} TC — cable (diurnal zone)')
 
         # ── Discrepancy-exclusion annotation ──────────────────────────────────
+        from lunar.hfe_loader import STABLE_WINDOWS, DISCREPANCY_REGIONS  # lazy
         _sw   = STABLE_WINDOWS.get(site_name, [])
         _dr   = DISCREPANCY_REGIONS.get(site_name, {})
         _excl = []
