@@ -667,16 +667,16 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
 
     for probe in probes:
         for data in probe.values():
-            all_depths_all.append(data['depth_mm'])
+            all_depths_all.append(data['depth_cm'])
 
-    # Build a time-indexed merged view: {timestamp: {depth_mm: T}}
+    # Build a time-indexed merged view: {timestamp: {depth_cm: T}}
     from collections import defaultdict
     ts_index = defaultdict(dict)
     for probe in probes:
         for sensor, data in probe.items():
-            d_mm = data['depth_mm']
+            d_cm = data['depth_cm']
             for t, T in zip(data['times'], data['temps']):
-                ts_index[t][d_mm] = T
+                ts_index[t][d_cm] = T
 
     # Sort all unique timestamps
     all_times = sorted(ts_index.keys())
@@ -692,7 +692,7 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
         temps   = [profile[d] for d in depths]
         color   = snap_cmap(snap_i / max(1, n_snapshots - 1))
         lbl     = (f'Day {day:.0f}' if day > 0 else 'Emplacement')
-        ax_prof.plot(temps, [d / 10 for d in depths],  # depth in cm
+        ax_prof.plot(temps, depths,          # depths already in cm
                      'o-', color=color, lw=1.5, ms=5, label=lbl)
 
     ax_prof.invert_yaxis()
@@ -732,7 +732,7 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
                                 for t in common])
             delta  = np.array([tA_map[t] - tB_map[t] for t in common])
             color  = grad_cmap(bridge_idx % 10)
-            depth_label = f'{dA["depth_mm"]}–{dB["depth_mm"]} mm'
+            depth_label = f'{dA["depth_cm"]}–{dB["depth_cm"]} cm'
             ax_grad.plot(days, delta, lw=0.9, color=color,
                          label=f'{bridge_name}  ({depth_label})')
             bridge_idx += 1
