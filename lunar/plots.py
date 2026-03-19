@@ -374,9 +374,8 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                      label=f'{site_name} TC — cable (diurnal zone)')
 
         # ── Discrepancy-exclusion annotation ──────────────────────────────────
-        from lunar.hfe_loader import STABLE_WINDOWS, DISCREPANCY_REGIONS  # lazy
-        _sw   = STABLE_WINDOWS.get(site_name, [])
-        _dr   = DISCREPANCY_REGIONS.get(site_name, {})
+        _sw = errors.get('stable_windows', [])
+        _dr = errors.get('discrepancy_regions', {})
         _excl = []
         for _pi, _regions in _dr.items():
             _win = _sw[_pi] if _pi < len(_sw) else None
