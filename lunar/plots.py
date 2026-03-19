@@ -302,7 +302,7 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
 
     fig = plt.figure(figsize=figsize)
     gs  = gridspec.GridSpec(2, 2, height_ratios=[2.8, 1.0],
-                            hspace=0.38, wspace=0.38)
+                            hspace=0.72, wspace=0.38)
 
     for col, site_name in enumerate(sites):
         if site_name not in apollo_results:
@@ -409,7 +409,9 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
             f'{_win_note}',
             fontsize=10, weight='bold', pad=8,
         )
-        ax0.legend(fontsize=8.5, framealpha=0.9, loc='lower left')
+        ax0.legend(fontsize=7.5, framealpha=0.92, ncol=2,
+                   loc='upper center', bbox_to_anchor=(0.5, -0.04),
+                   borderaxespad=0, edgecolor='#cccccc')
 
         # ── Row 1: residual lollipop chart ────────────────────────────────────
         ax1 = fig.add_subplot(gs[1, col])
