@@ -27,8 +27,26 @@ import matplotlib.gridspec as gridspec
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 
-# ── Shared style ──────────────────────────────────────────────────────────────
-plt.style.use('seaborn-v0_8-darkgrid')
+# ── Shared style — publication quality ───────────────────────────────────────
+import matplotlib as _mpl
+plt.style.use('seaborn-v0_8-whitegrid')
+_mpl.rcParams.update({
+    'font.family':        'sans-serif',
+    'font.size':          11,
+    'axes.titlesize':     13,
+    'axes.labelsize':     12,
+    'xtick.labelsize':    10,
+    'ytick.labelsize':    10,
+    'legend.fontsize':    10,
+    'legend.framealpha':  0.9,
+    'figure.dpi':         130,
+    'axes.spines.top':    False,
+    'axes.spines.right':  False,
+    'axes.edgecolor':     '#444444',
+    'axes.linewidth':     0.8,
+    'grid.color':         '#dddddd',
+    'grid.linewidth':     0.6,
+})
 
 _MODEL_COLORS = {
     'discrete':           '#C0392B',   # deep red
@@ -199,9 +217,13 @@ def apollo_comparison(stats, errors, site_name, model_name,
              linewidth=3, label=f'{label} (mean)')
     ax1.fill_betweenx(z_grid * 100, stats['T_min'], stats['T_max'],
                       color=color, alpha=0.15, label='Diurnal range')
-    ax1.plot(a_temps, a_depths * 100, 'o', color='green',
-             markersize=11, markeredgewidth=2, markeredgecolor='darkgreen',
+    ax1.plot(a_temps, a_depths * 100, 'o', color='#1A5276',
+             markersize=9, markeredgewidth=1.5, markeredgecolor='white',
              label=f'{site_name} measured', zorder=5)
+
+    max_meas_cm = float(np.max(a_depths * 100))
+    y_max_cm    = max(30.0, max_meas_cm * 2.2)
+    mask = z_grid * 100 <= y_max_cm * 1.05
 
     ax1.set_xlabel('Temperature (K)', fontsize=12, weight='bold')
     ax1.set_ylabel('Depth (cm)', fontsize=12, weight='bold')
@@ -209,19 +231,20 @@ def apollo_comparison(stats, errors, site_name, model_name,
                   f'Bias: {errors["bias"]:+.2f} K  MAE: {errors["mae"]:.2f} K',
                   fontsize=13, weight='bold')
     ax1.legend(fontsize=10, framealpha=0.95)
-    ax1.grid(True, alpha=0.3)
-    ax1.invert_yaxis()
+    ax1.set_ylim(y_max_cm, 0)
 
-    # ── Panel 2: Residuals bar chart ──────────────────────────────────────────
+    # ── Panel 2: Residuals lollipop chart ─────────────────────────────────────
     ax2 = fig.add_subplot(gs[1, 0])
-    bar_colors = ['#E74C3C' if r > 0 else '#2471A3' for r in residuals]
-    ax2.barh(a_depths * 100, residuals, height=4,
-             color=bar_colors, alpha=0.75, edgecolor='black')
-    ax2.axvline(0, color='black', linewidth=1.5)
+    d_cm = a_depths * 100
+    ax2.hlines(d_cm, 0, residuals, color='#2471A3', linewidth=2.0, alpha=0.85)
+    ax2.scatter(residuals, d_cm,
+                s=50, color='#2471A3', edgecolors='white',
+                linewidths=0.8, zorder=4)
+    ax2.axvline(0, color='#333333', linewidth=1.2, ls='--')
     ax2.set_xlabel('Residual (K)',  fontsize=11, weight='bold')
     ax2.set_ylabel('Depth (cm)',   fontsize=11, weight='bold')
     ax2.set_title('Model − Measured', fontsize=12, weight='bold')
-    ax2.grid(True, alpha=0.3, axis='x')
+    ax2.set_ylim(y_max_cm * 0.55, max(0, float(np.min(d_cm)) - 2))
     ax2.invert_yaxis()
 
     # ── Panel 3: Statistics text ───────────────────────────────────────────────
@@ -256,7 +279,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
-                           figsize=(16, 11)):
+                           figsize=(16, 10)):
     """
     Show both Apollo 15 and Apollo 17 validation side-by-side in one figure.
 
@@ -274,75 +297,101 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
     matplotlib.figure.Figure
     """
     sites  = ['Apollo 15', 'Apollo 17']
-    colors = ['#1A5276', '#884EA0']   # blue for A15, purple for A17
+    colors = ['#1A5276', '#7D3C98']   # navy blue for A15, purple for A17
     color, ls, label = _model_style(model_name)
 
     fig = plt.figure(figsize=figsize)
-    gs  = gridspec.GridSpec(3, 2, height_ratios=[2.5, 1.2, 0.8],
-                            hspace=0.42, wspace=0.35)
+    gs  = gridspec.GridSpec(2, 2, height_ratios=[2.8, 1.0],
+                            hspace=0.38, wspace=0.38)
 
     for col, site_name in enumerate(sites):
         if site_name not in apollo_results:
             continue
-        stats    = apollo_results[site_name]['stats']
-        errors   = apollo_results[site_name]['errors']
-        z_grid   = stats['depth']
-        a_depths = errors['apollo_depths']
-        a_temps  = errors['apollo_temps']
+        stats     = apollo_results[site_name]['stats']
+        errors    = apollo_results[site_name]['errors']
+        z_grid    = stats['depth']
+        a_depths  = errors['apollo_depths']          # metres
+        a_temps   = errors['apollo_temps']
         residuals = errors['residuals']
         dot_color = colors[col]
 
+        # ── Depth axis: zoom to the measurement region with context ───────────
+        # Apollo 15 sensors: 8–14 cm  |  Apollo 17 sensors: 13–23 cm
+        # Show down to 2× the deepest sensor so the profile shape is visible.
+        max_meas_cm = float(np.max(a_depths * 100))
+        y_max_cm    = max(30.0, max_meas_cm * 2.2)   # at least 30 cm
+
         # ── Row 0: temperature profiles ───────────────────────────────────────
         ax0 = fig.add_subplot(gs[0, col])
-        ax0.plot(stats['T_mean'], z_grid * 100, color=color, ls=ls,
-                 linewidth=2.5, label=f'{label} (mean)')
-        ax0.fill_betweenx(z_grid * 100, stats['T_min'], stats['T_max'],
-                          color=color, alpha=0.15, label='Diurnal range')
+
+        # Clip model arrays to the displayed depth range (avoids confusing
+        # flat tail that dominates a 0–300 cm axis)
+        mask = z_grid * 100 <= y_max_cm * 1.05
+        ax0.plot(stats['T_mean'][mask], z_grid[mask] * 100,
+                 color=color, ls=ls, linewidth=2.5, label=f'{label} (mean)')
+        ax0.fill_betweenx(z_grid[mask] * 100,
+                          stats['T_min'][mask], stats['T_max'][mask],
+                          color=color, alpha=0.18, label='Diurnal range')
+
+        # Measurement dots — each sensor at its own depth
         ax0.plot(a_temps, a_depths * 100, 'o', color=dot_color,
-                 markersize=9, markeredgewidth=1.5,
-                 markeredgecolor='black', zorder=5,
+                 markersize=8, markeredgewidth=1.2,
+                 markeredgecolor='white', zorder=5,
                  label=f'{site_name} measured')
-        ax0.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
-        ax0.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
+
+        # Annotate deepest measurement depth
+        ax0.axhline(max_meas_cm, color=dot_color, ls='--',
+                    lw=0.8, alpha=0.45)
+
+        ax0.set_xlabel('Temperature (K)', fontsize=12, weight='bold')
+        ax0.set_ylabel('Depth (cm)',       fontsize=12, weight='bold')
+        ax0.set_ylim(y_max_cm, 0)          # zoomed — surface at top
         ax0.set_title(
             f'{site_name}\n'
             f'RMSE {errors["rmse"]:.2f} K  |  Bias {errors["bias"]:+.2f} K',
-            fontsize=12, weight='bold'
+            fontsize=13, weight='bold', pad=8,
         )
-        ax0.legend(fontsize=9, framealpha=0.9)
-        ax0.grid(True, alpha=0.3)
-        ax0.invert_yaxis()
+        ax0.legend(fontsize=9, framealpha=0.9, loc='lower left')
 
-        # ── Row 1: residual bar chart ─────────────────────────────────────────
+        # ── Row 1: residual lollipop chart ────────────────────────────────────
         ax1 = fig.add_subplot(gs[1, col])
-        bar_colors = ['#E74C3C' if r > 0 else '#2471A3' for r in residuals]
-        ax1.barh(a_depths * 100, residuals, height=4,
-                 color=bar_colors, alpha=0.8, edgecolor='black')
-        ax1.axvline(0, color='black', linewidth=1.5)
-        ax1.set_xlabel('Residual (K)', fontsize=10, weight='bold')
-        ax1.set_ylabel('Depth (cm)',   fontsize=10, weight='bold')
-        ax1.set_title('Model − Measured', fontsize=11, weight='bold')
-        ax1.grid(True, alpha=0.3, axis='x')
+
+        d_cm  = a_depths * 100        # depths in cm
+        # Lollipop: horizontal lines + circles (clean for publication)
+        ax1.hlines(d_cm, 0, residuals, color='#2471A3',
+                   linewidth=1.8, alpha=0.85)
+        ax1.scatter(residuals, d_cm,
+                    s=45, color='#2471A3', edgecolors='white',
+                    linewidths=0.8, zorder=4)
+        ax1.axvline(0, color='#333333', linewidth=1.2, ls='--')
+
+        ax1.set_xlabel('Residual  (Model − Measured, K)',
+                       fontsize=11, weight='bold')
+        ax1.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
+        ax1.set_title('Model − Measured', fontsize=12, weight='bold', pad=6)
+        ax1.set_ylim(y_max_cm * 0.55, max(0, float(np.min(d_cm)) - 2))
         ax1.invert_yaxis()
 
-        # ── Row 2: stats text ─────────────────────────────────────────────────
-        ax2 = fig.add_subplot(gs[2, col])
-        ax2.axis('off')
+        # Minimal stats annotation inside the residuals panel
         r2 = 1.0 - (np.sum(residuals**2) /
                     np.sum((a_temps - np.mean(a_temps))**2))
-        info = (f"RMSE {errors['rmse']:.3f} K  |  "
-                f"Bias {errors['bias']:+.3f} K  |  "
-                f"MAE {errors['mae']:.3f} K  |  "
-                f"R² {r2:.3f}   "
-                f"[SUNSCALE {sunscale:.2f}  CHI {chi:.1f}  "
-                f"ALBEDO {albedo:.3f}  Model: {label}]")
-        ax2.text(0.5, 0.5, info, fontsize=9, family='monospace',
-                 ha='center', va='center', transform=ax2.transAxes,
-                 bbox=dict(boxstyle='round', facecolor='wheat',
-                           alpha=0.35, pad=0.6))
+        ax1.text(0.97, 0.05,
+                 f'RMSE {errors["rmse"]:.3f} K\n'
+                 f'Bias  {errors["bias"]:+.3f} K\n'
+                 f'MAE  {errors["mae"]:.3f} K\n'
+                 f'R²    {r2:.3f}',
+                 fontsize=8, family='monospace',
+                 ha='right', va='bottom', transform=ax1.transAxes,
+                 bbox=dict(boxstyle='round,pad=0.4',
+                           facecolor='#f7f7f7', edgecolor='#cccccc',
+                           alpha=0.9))
 
-    plt.suptitle(f'Apollo 15 & 17 Dual Validation — {label}',
-                 fontsize=14, weight='bold', y=1.01)
+    # ── Shared super-title ────────────────────────────────────────────────────
+    cfg = (f'Model: {label}   |   SUNSCALE {sunscale:.2f}   '
+           f'CHI {chi:.1f}   ALBEDO {albedo:.3f}')
+    plt.suptitle(f'Apollo 15 & 17 Dual Validation — Discrete Layers\n'
+                 f'{cfg}',
+                 fontsize=13, weight='bold', y=1.01)
     plt.tight_layout()
     return fig
 
@@ -467,16 +516,17 @@ def _model_labels_get(name):
 # 5. HFE TIME-SERIES  (temperature over probe lifetime)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def hfe_timeseries(site_name, figsize=(14, 8)):
+def hfe_timeseries(site_name, figsize=(16, 6)):
     """
     Plot the full temperature time-series for every sensor at *site_name*,
     one subplot per probe.
 
     Highlights
     ----------
-    - The early high-T period (drilling thermal disturbance / residual heat)
-    - A vertical dashed line marking the start of the stable equilibrium window
-      (last 25 % of each probe's record — used for validation)
+    - Sensors coloured by depth (shallow = warm, deep = cool).
+    - Shaded green band marks the stable equilibrium window (last 25 % of
+      each probe's record) used for model validation.
+    - Dashed vertical lines mark the start and end of the stable window.
 
     Parameters
     ----------
@@ -487,29 +537,33 @@ def hfe_timeseries(site_name, figsize=(14, 8)):
     matplotlib.figure.Figure
     """
     from lunar.hfe_loader import get_timeseries, _STABLE_FRACTION
-    import datetime
 
-    probes = get_timeseries(site_name)
+    probes   = get_timeseries(site_name)
     n_probes = len(probes)
 
     fig, axes = plt.subplots(1, n_probes, figsize=figsize,
                              sharey=False, squeeze=False)
     axes = axes[0]
 
-    _depth_cmap = plt.get_cmap('plasma_r')
+    # Diverging-friendly depth colormap: shallow=yellow, deep=indigo
+    _depth_cmap = plt.get_cmap('viridis_r')
+
+    # Collect overall depth range for shared colorbar
+    all_depths_global = sorted({d['depth_mm']
+                                 for probe in probes
+                                 for d in probe.values()})
+    g_dmin = all_depths_global[0]
+    g_dmax = all_depths_global[-1]
 
     for ax, probe in zip(axes, probes):
         all_depths = sorted({d['depth_mm'] for d in probe.values()})
         d_min, d_max = all_depths[0], all_depths[-1]
-        norm = Normalize(vmin=d_min, vmax=d_max)
+        norm = Normalize(vmin=g_dmin, vmax=g_dmax)
 
-        t_end_global = None  # latest timestamp in this probe
-        for data in probe.values():
-            if t_end_global is None or data['times'][-1] > t_end_global:
-                t_end_global = data['times'][-1]
-            if data['times'][0] > t_end_global:
-                t_end_global = data['times'][0]
+        t_stable_final = None
+        t_end_final    = None
 
+        # --- plot each sensor ---
         for sensor, data in sorted(probe.items(),
                                    key=lambda kv: kv[1]['depth_mm']):
             times = data['times']
@@ -517,40 +571,60 @@ def hfe_timeseries(site_name, figsize=(14, 8)):
             d_mm  = data['depth_mm']
             color = _depth_cmap(norm(d_mm))
 
-            # Convert datetimes to matplotlib floats for plotting
             t_num = np.array([t.timestamp() / 86400 for t in times])
             t0    = t_num[0]
-            t_num -= t0       # days since first reading
+            t_num = t_num - t0        # days since emplacement
 
             n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
-            t_stable = t_num[-n_stable]   # x-coordinate of stable cutoff
+            t_stable = t_num[-n_stable]
 
-            ax.plot(t_num, temps, lw=0.8, color=color,
+            # Thicker line for deep (equilibrium) sensors
+            lw = 1.5 if d_mm >= 80 else 1.0
+
+            ax.plot(t_num, temps, lw=lw, color=color, alpha=0.92,
                     label=f'{sensor}  ({d_mm} mm)')
-            ax.axvline(t_stable, color='gray', ls=':', lw=1.0, alpha=0.7)
 
-        # Stable-window annotation (once per probe)
-        ax.axvspan(t_stable, t_num[-1], alpha=0.08, color='green',
+            # Track stable window bounds
+            if t_stable_final is None or t_stable < t_stable_final:
+                t_stable_final = t_stable
+            if t_end_final is None or t_num[-1] > t_end_final:
+                t_end_final = t_num[-1]
+
+        # Stable-window shading and boundary lines (once per probe)
+        ax.axvspan(t_stable_final, t_end_final,
+                   alpha=0.13, color='#2ECC71',
                    label='Stable window (validation)')
+        ax.axvline(t_stable_final, color='#1E8449', ls='--',
+                   lw=1.4, alpha=0.75, zorder=3)
+        ax.axvline(t_end_final,   color='#1E8449', ls=':',
+                   lw=1.2, alpha=0.55, zorder=3)
 
         probe_label = next(iter(probe.values()))['probe_label']
-        ax.set_title(f'{probe_label}', fontsize=12, weight='bold')
-        ax.set_xlabel('Days since emplacement', fontsize=10)
-        ax.set_ylabel('Temperature (K)', fontsize=10)
-        ax.legend(fontsize=7, ncol=1, loc='upper right')
-        ax.grid(True, alpha=0.25)
+        ax.set_title(probe_label, fontsize=13, weight='bold', pad=8)
+        ax.set_xlabel('Days since emplacement', fontsize=12, weight='bold')
+        ax.set_ylabel('Temperature (K)',        fontsize=12, weight='bold')
 
-    # Shared depth colorbar
+        # Legend: right column for deeper sensors (more relevant)
+        leg = ax.legend(fontsize=7.5, ncol=1,
+                        loc='upper right', framealpha=0.92,
+                        edgecolor='#cccccc',
+                        handlelength=1.6)
+        for line in leg.get_lines():
+            line.set_linewidth(2.0)
+
+    # Shared colorbar across all probe panels
     sm = ScalarMappable(cmap=_depth_cmap,
-                        norm=Normalize(vmin=all_depths[0],
-                                       vmax=all_depths[-1]))
+                        norm=Normalize(vmin=g_dmin, vmax=g_dmax))
     sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, shrink=0.7, pad=0.02)
-    cbar.set_label('Sensor depth (mm)', fontsize=10)
+    cbar = fig.colorbar(sm, ax=axes, shrink=0.75, pad=0.02, aspect=22)
+    cbar.set_label('Sensor depth (mm)', fontsize=11, weight='bold')
+    cbar.ax.tick_params(labelsize=9)
 
-    fig.suptitle(f'{site_name} — HFE Probe Temperature History\n'
-                 'Green band = stable equilibrium window used for validation',
-                 fontsize=13, weight='bold', y=1.01)
+    fig.suptitle(
+        f'{site_name} — HFE Probe Temperature History\n'
+        'Green band = stable equilibrium window used for validation',
+        fontsize=13, weight='bold', y=1.02,
+    )
     plt.tight_layout()
     return fig
 
