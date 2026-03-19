@@ -138,13 +138,15 @@ def compute_apollo_errors(model_T_mean, z_grid, site_name):
     residuals   = m_at_apollo - a_temps
 
     return {
-        'rmse':          float(np.sqrt(np.mean(residuals ** 2))),
-        'bias':          float(np.mean(residuals)),
-        'mae':           float(np.mean(np.abs(residuals))),
-        'residuals':     residuals,
-        'apollo_depths': a_depths,
-        'apollo_temps':  a_temps,
-        'model_at_apollo': m_at_apollo,
+        'rmse':               float(np.sqrt(np.mean(residuals ** 2))),
+        'bias':               float(np.mean(residuals)),
+        'mae':                float(np.mean(np.abs(residuals))),
+        'residuals':          residuals,
+        'apollo_depths':      a_depths,
+        'apollo_temps':       a_temps,
+        'apollo_sensor_types': apollo.get('sensor_types',
+                                          ['TG'] * len(a_depths)),
+        'model_at_apollo':    m_at_apollo,
     }
 
 

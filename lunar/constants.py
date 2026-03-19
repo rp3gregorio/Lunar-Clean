@@ -61,11 +61,14 @@ def _load_apollo_data():
     """Load equilibrium temperatures from HFE files; fall back to literals."""
     try:
         from lunar.hfe_loader import get_equilibrium_temps
-        a15 = get_equilibrium_temps('Apollo 15')
+        a15 = get_equilibrium_temps('Apollo 15')  # [(depth_m, T_K, type), ...]
         a17 = get_equilibrium_temps('Apollo 17')
         return a15, a17
     except Exception:
-        return _APOLLO_15_FALLBACK, _APOLLO_17_FALLBACK
+        # Fallback 2-tuples: tag everything as 'TG' (conservative)
+        a15 = [(d, T, 'TG') for d, T in _APOLLO_15_FALLBACK]
+        a17 = [(d, T, 'TG') for d, T in _APOLLO_17_FALLBACK]
+        return a15, a17
 
 _a15_data, _a17_data = _load_apollo_data()
 
@@ -75,14 +78,16 @@ APOLLO_SITES = {
     'Apollo 17': {'lat': 20.1908, 'lon': 30.7717},
 }
 
-# Convenience dict: name → numpy arrays of (depths_m, temps_K)
+# Convenience dict: name → numpy arrays of (depths_m, temps_K) + sensor types
 APOLLO_DATA = {
     'Apollo 15': {
-        'depths': np.array([d for d, _ in _a15_data]),
-        'temps':  np.array([t for _, t in _a15_data]),
+        'depths':       np.array([d  for d, _, _  in _a15_data]),
+        'temps':        np.array([T  for _, T, _  in _a15_data]),
+        'sensor_types': [st          for _, _, st in _a15_data],
     },
     'Apollo 17': {
-        'depths': np.array([d for d, _ in _a17_data]),
-        'temps':  np.array([t for _, t in _a17_data]),
+        'depths':       np.array([d  for d, _, _  in _a17_data]),
+        'temps':        np.array([T  for _, T, _  in _a17_data]),
+        'sensor_types': [st          for _, _, st in _a17_data],
     },
 }

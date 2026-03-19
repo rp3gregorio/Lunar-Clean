@@ -333,11 +333,24 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                           stats['T_min'][mask], stats['T_max'][mask],
                           color=color, alpha=0.18, label='Diurnal range')
 
-        # Measurement dots — each sensor at its own depth
-        ax0.plot(a_temps, a_depths * 100, 'o', color=dot_color,
-                 markersize=8, markeredgewidth=1.2,
-                 markeredgecolor='white', zorder=5,
-                 label=f'{site_name} measured')
+        # Measurement dots — differentiate TG (primary) vs TR (secondary)
+        sensor_types = errors.get('apollo_sensor_types',
+                                  ['TG'] * len(a_depths))
+        tg_mask = np.array([st == 'TG' for st in sensor_types])
+        tr_mask = ~tg_mask
+
+        if tg_mask.any():
+            ax0.plot(a_temps[tg_mask], a_depths[tg_mask] * 100,
+                     'o', color=dot_color,
+                     markersize=9, markeredgewidth=1.3,
+                     markeredgecolor='white', zorder=6,
+                     label=f'{site_name} TG (primary, official depth)')
+        if tr_mask.any():
+            ax0.plot(a_temps[tr_mask], a_depths[tr_mask] * 100,
+                     's', color=dot_color,
+                     markersize=7, markeredgewidth=1.3,
+                     markeredgecolor='white', alpha=0.55, zorder=5,
+                     label=f'{site_name} TR (secondary sensor)')
 
         # Annotate deepest measurement depth
         ax0.axhline(max_meas_cm, color=dot_color, ls='--',
@@ -536,10 +549,11 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     -------
     matplotlib.figure.Figure
     """
-    from lunar.hfe_loader import get_timeseries, _STABLE_FRACTION
+    from lunar.hfe_loader import get_timeseries, _STABLE_WINDOWS
 
     probes   = get_timeseries(site_name)
     n_probes = len(probes)
+    windows  = _STABLE_WINDOWS[site_name]   # [(start, end), ...] per probe
 
     fig, axes = plt.subplots(1, n_probes, figsize=figsize,
                              sharey=False, squeeze=False)
@@ -555,11 +569,8 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     g_dmin = all_depths_global[0]
     g_dmax = all_depths_global[-1]
 
-    for ax, probe in zip(axes, probes):
+    for ax, probe, (win_start, win_end) in zip(axes, probes, windows):
         norm = Normalize(vmin=g_dmin, vmax=g_dmax)
-
-        t_stable_final = None
-        t_end_final    = None
 
         # --- plot each sensor ---
         for sensor, data in sorted(probe.items(),
@@ -573,28 +584,20 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             t0    = t_num[0]
             t_num = t_num - t0        # days since emplacement
 
-            n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
-            t_stable = t_num[-n_stable]
-
             # Thicker line for deep (equilibrium) sensors below diurnal zone
             lw = 1.6 if d_cm >= 80 else 1.0
 
             ax.plot(t_num, temps, lw=lw, color=color, alpha=0.92,
                     label=f'{sensor}  ({d_cm} cm)')
 
-            # Track stable window bounds (use earliest stable start)
-            if t_stable_final is None or t_stable < t_stable_final:
-                t_stable_final = t_stable
-            if t_end_final is None or t_num[-1] > t_end_final:
-                t_end_final = t_num[-1]
-
         # Stable-window shading and boundary lines (once per probe)
-        ax.axvspan(t_stable_final, t_end_final,
+        # Uses explicit windows from _STABLE_WINDOWS (excludes flat-line artefacts)
+        ax.axvspan(win_start, win_end,
                    alpha=0.13, color='#2ECC71',
                    label='Stable window (validation)')
-        ax.axvline(t_stable_final, color='#1E8449', ls='--',
+        ax.axvline(win_start, color='#1E8449', ls='--',
                    lw=1.4, alpha=0.80, zorder=3)
-        ax.axvline(t_end_final,    color='#1E8449', ls=':',
+        ax.axvline(win_end,   color='#1E8449', ls=':',
                    lw=1.2, alpha=0.60, zorder=3)
 
         probe_label = next(iter(probe.values()))['probe_label']
