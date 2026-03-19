@@ -45,12 +45,53 @@ _STABLE_FRACTION = 0.25
 # Explicit stable windows (days since probe emplacement) used for both
 # equilibrium-temperature averaging and green-band visualisation.
 # Windows are chosen to exclude:
-#   A15 — flat-line artefacts that appear in the final ~50 days (~day 1375+)
-#   A17 — step-changes and sparse anomalous readings that appear after ~day 700
+#   A15 P1 — emplacement transient (0–80 d) and disturbance events; flat-line
+#             artefact after day ~1370
+#   A15 P2 — emplacement transient (0–120 d); disturbance at day ~526;
+#             TG22A disturbance at day ~1249 → window ends at 1240
+#   A17 P1 — emplacement transient (0–60 d); TG11B step at day 862
+#   A17 P2 — emplacement transient (0–60 d); disturbances at 503, 714, 852
+#             → window starts at 530 (27 days after the 503 event)
 # Format: [(probe1_start, probe1_end), (probe2_start, probe2_end)]
 _STABLE_WINDOWS = {
-    'Apollo 15': [(840, 1370), (840, 1370)],
-    'Apollo 17': [(520,  700), (520,  700)],
+    'Apollo 15': [(840, 1370), (840, 1240)],
+    'Apollo 17': [(520,  700), (530,  700)],
+}
+
+# Known discrepancy / disturbance regions (days since emplacement) per site
+# and per probe index (0 = Probe 1, 1 = Probe 2).
+# Each entry is a tuple: (start_day, end_day, description)
+# end_day=None means "to the end of the record".
+_DISCREPANCY_REGIONS = {
+    'Apollo 15': {
+        0: [  # Probe 1
+            (0,    80,   'Emplacement transient'),
+            (585,  610,  'Thermal disturbance (TG11A)'),
+            (820,  845,  'Thermal disturbance (TG11A)'),
+            (912,  935,  'Thermal disturbance (TG11A)'),
+            (967,  990,  'Thermal disturbance (TG11A)'),
+            (1242, 1262, 'Thermal disturbance (TG11A/TG22A)'),
+            (1370, None, 'Flat-line artefact / data gap'),
+        ],
+        1: [  # Probe 2
+            (0,    120,  'Emplacement transient (TG22A/B)'),
+            (518,  540,  'Thermal disturbance (TG22A/B)'),
+            (1242, 1262, 'Thermal disturbance (TG22A)'),
+        ],
+    },
+    'Apollo 17': {
+        0: [  # Probe 1
+            (0,    60,   'Emplacement transient'),
+            (855,  875,  'Thermal disturbance (TG11B)'),
+            (1176, 1200, 'Thermal disturbance (TG11A)'),
+        ],
+        1: [  # Probe 2
+            (0,    60,   'Emplacement transient'),
+            (496,  530,  'Thermal disturbance (TG21A/B)'),
+            (707,  725,  'Thermal disturbance (TG21A)'),
+            (845,  865,  'Thermal disturbance (TG21A/B)'),
+        ],
+    },
 }
 
 

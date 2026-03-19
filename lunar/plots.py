@@ -536,10 +536,14 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
 
     Highlights
     ----------
+    - Sensors styled by instrument type:
+        TG (gradient bridge, official)  — solid line, full opacity
+        TR (reference TC, supplementary) — dashed line, reduced opacity
+        TC (cable TC, shallow/diurnal)   — dotted line, low opacity
     - Sensors coloured by depth (shallow = warm, deep = cool).
-    - Shaded green band marks the stable equilibrium window (last 25 % of
-      each probe's record) used for model validation.
-    - Dashed vertical lines mark the start and end of the stable window.
+    - Green band / dashed lines mark the stable equilibrium window used for
+      model validation.
+    - Orange bands mark known discrepancy/disturbance regions.
 
     Parameters
     ----------
@@ -552,10 +556,10 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     import lunar.hfe_loader as _hfl
     from lunar.hfe_loader import get_timeseries
 
-    # Use explicit stable windows if available (updated hfe_loader);
-    # fall back to last-25% heuristic so older cached modules keep working.
-    _STABLE_WINDOWS = getattr(_hfl, '_STABLE_WINDOWS', None)
-    _STABLE_FRACTION = getattr(_hfl, '_STABLE_FRACTION', 0.25)
+    # Stable windows and discrepancy regions from hfe_loader (with fallbacks)
+    _STABLE_WINDOWS      = getattr(_hfl, '_STABLE_WINDOWS',      None)
+    _STABLE_FRACTION     = getattr(_hfl, '_STABLE_FRACTION',     0.25)
+    _DISCREPANCY_REGIONS = getattr(_hfl, '_DISCREPANCY_REGIONS', {})
 
     probes   = get_timeseries(site_name)
     n_probes = len(probes)
@@ -564,7 +568,7 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
                              sharey=False, squeeze=False)
     axes = axes[0]
 
-    # Diverging-friendly depth colormap: shallow=yellow, deep=indigo
+    # Depth colormap: shallow = warm yellow, deep = cool indigo
     _depth_cmap = plt.get_cmap('viridis_r')
 
     # Collect overall depth range for shared colorbar (in cm)
@@ -574,21 +578,36 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     g_dmin = all_depths_global[0]
     g_dmax = all_depths_global[-1]
 
-    # Build per-probe (win_start, win_end) — use explicit dict when available,
-    # otherwise fall back to last-fraction heuristic (needs a first-pass read).
+    # Per-probe stable windows
     probe_windows = (
         _STABLE_WINDOWS[site_name]
         if _STABLE_WINDOWS and site_name in _STABLE_WINDOWS
         else [None] * n_probes
     )
 
-    for ax, probe, pw in zip(axes, probes, probe_windows):
+    # Per-probe discrepancy regions
+    site_discrepancies = _DISCREPANCY_REGIONS.get(site_name, {})
+
+    # Sensor-type style lookup  (prefix → (linestyle, linewidth, alpha))
+    #   TG = official gradient-bridge primary sensors
+    #   TR = supplementary reference thermocouples
+    #   TC = shallow cable sensors (diurnal zone, not used for heat flow)
+    _style = {
+        'TG': ('-',  1.8, 0.95),   # solid,  thick,  full
+        'TR': ('--', 1.1, 0.65),   # dashed, thin,   medium
+        'TC': (':',  0.9, 0.40),   # dotted, thinner, dim
+    }
+
+    _legend_type_added = set()   # avoid duplicate legend entries for type markers
+
+    for probe_idx, (ax, probe, pw) in enumerate(zip(axes, probes, probe_windows)):
         norm = Normalize(vmin=g_dmin, vmax=g_dmax)
 
         t_stable_final = None
         t_end_final    = None
+        probe_t_max    = 0          # track max x for open-ended discrepancy regions
 
-        # --- plot each sensor ---
+        # ── Plot each sensor ─────────────────────────────────────────────────
         for sensor, data in sorted(probe.items(),
                                    key=lambda kv: kv[1]['depth_cm']):
             times = data['times']
@@ -600,13 +619,23 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             t0    = t_num[0]
             t_num = t_num - t0        # days since emplacement
 
-            # Thicker line for deep (equilibrium) sensors below diurnal zone
-            lw = 1.6 if d_cm >= 80 else 1.0
+            # Sensor type from two-letter prefix
+            prefix = ''.join(c for c in sensor if c.isalpha())[:2]
+            ls, lw, alpha = _style.get(prefix, ('-', 1.2, 0.80))
 
-            ax.plot(t_num, temps, lw=lw, color=color, alpha=0.92,
-                    label=f'{sensor}  ({d_cm} cm)')
+            # Label: sensor name + depth + type annotation on first occurrence
+            type_labels = {'TG': 'official', 'TR': 'supplementary', 'TC': 'shallow/diurnal'}
+            type_tag = f' [{type_labels.get(prefix, prefix)}]' if prefix not in _legend_type_added else ''
+            if type_tag:
+                _legend_type_added.add(prefix)
 
-            # Track fallback window bounds (earliest stable start)
+            ax.plot(t_num, temps, lw=lw, ls=ls, color=color, alpha=alpha,
+                    label=f'{sensor}  ({d_cm} cm){type_tag}')
+
+            if t_num[-1] > probe_t_max:
+                probe_t_max = t_num[-1]
+
+            # Fallback window tracking
             if pw is None:
                 n_stable = max(1, int(len(temps) * _STABLE_FRACTION))
                 t_s = t_num[-n_stable]
@@ -617,28 +646,39 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
 
         win_start, win_end = pw if pw is not None else (t_stable_final, t_end_final)
 
-        # Stable-window shading and boundary lines (once per probe)
+        # ── Discrepancy regions (orange bands) ───────────────────────────────
+        disc_regions = site_discrepancies.get(probe_idx, [])
+        _disc_label_added = False
+        for reg_start, reg_end, _reg_desc in disc_regions:
+            r_end    = reg_end if reg_end is not None else probe_t_max + 50
+            disc_lbl = 'Discrepancy / disturbance' if not _disc_label_added else '_nolegend_'
+            _disc_label_added = True
+            ax.axvspan(reg_start, r_end,
+                       alpha=0.10, color='#E67E22', zorder=1,
+                       label=disc_lbl)
+
+        # ── Stable window (green band) ────────────────────────────────────────
         ax.axvspan(win_start, win_end,
-                   alpha=0.13, color='#2ECC71',
+                   alpha=0.14, color='#2ECC71', zorder=2,
                    label='Stable window (validation)')
         ax.axvline(win_start, color='#1E8449', ls='--',
-                   lw=1.4, alpha=0.80, zorder=3)
+                   lw=1.4, alpha=0.85, zorder=3)
         ax.axvline(win_end,   color='#1E8449', ls=':',
-                   lw=1.2, alpha=0.60, zorder=3)
+                   lw=1.2, alpha=0.65, zorder=3)
 
         probe_label = next(iter(probe.values()))['probe_label']
         ax.set_title(probe_label, fontsize=13, weight='bold', pad=8)
         ax.set_xlabel('Days since emplacement', fontsize=12, weight='bold')
         ax.set_ylabel('Temperature (K)',        fontsize=12, weight='bold')
 
-        leg = ax.legend(fontsize=8, ncol=1,
+        leg = ax.legend(fontsize=7.5, ncol=1,
                         loc='upper right', framealpha=0.93,
                         edgecolor='#cccccc',
-                        handlelength=1.8)
+                        handlelength=2.0)
         for line in leg.get_lines():
-            line.set_linewidth(2.2)
+            line.set_linewidth(2.0)
 
-    # ── Colorbar on the far right of the figure — explicit placement ──────────
+    # ── Shared colorbar ───────────────────────────────────────────────────────
     fig.subplots_adjust(right=0.87)
     cbar_ax = fig.add_axes([0.89, 0.15, 0.016, 0.68])
     sm = ScalarMappable(cmap=_depth_cmap,
@@ -650,8 +690,9 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
 
     fig.suptitle(
         f'{site_name} — HFE Probe Temperature History\n'
-        'Green band = stable equilibrium window used for validation',
-        fontsize=13, weight='bold', y=1.02,
+        'TG = official (gradient bridge) · TR = supplementary · TC = shallow/diurnal  |  '
+        'Green = stable window · Orange = discrepancy region',
+        fontsize=11, weight='bold', y=1.02,
     )
     return fig
 
