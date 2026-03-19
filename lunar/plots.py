@@ -644,10 +644,17 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
         win_start, win_end = pw if pw is not None else (t_stable_final, t_end_final)
 
         # ── Discrepancy regions (orange bands) ───────────────────────────────
+        # Only draw regions that fall within or directly adjacent to the stable
+        # window (within 300 days of either boundary).  Distant early disturbances
+        # (emplacement transient, pre-equilibration events) are omitted — they are
+        # already self-evident from the emplacement spike at day 0.
         disc_regions = site_discrepancies.get(probe_idx, [])
         _disc_label_added = False
         for reg_start, reg_end, _reg_desc in disc_regions:
-            r_end    = reg_end if reg_end is not None else probe_t_max + 50
+            r_end = reg_end if reg_end is not None else probe_t_max + 50
+            # Skip if entirely outside a 300-day halo around the stable window
+            if r_end < win_start - 300 or reg_start > win_end + 300:
+                continue
             disc_lbl = 'Discrepancy / disturbance' if not _disc_label_added else '_nolegend_'
             _disc_label_added = True
             ax.axvspan(reg_start, r_end,
