@@ -44,28 +44,34 @@ _STABLE_FRACTION = 0.25
 
 # Explicit stable windows (days since probe emplacement) used for both
 # equilibrium-temperature averaging and green-band visualisation.
-# Windows are chosen to exclude ALL known disturbances (see _DISCREPANCY_REGIONS):
+# Each window is the MAXIMUM contiguous clean interval: starts strictly after
+# the last disturbance that precedes it, ends strictly before the next one.
 #
-#   A15 P1 — window [990, 1240]:
-#               Start pushed to 990 to exclude TG11A disturbances at days
-#               820–845, 912–935, 967–990 which occur inside the earlier [840,…]
-#               window.  End set to 1240 to exclude the day-1242 event.
-#               This leaves a clean 250-day window for deep-sensor equilibration.
+#   A15 P1 — window [992, 1240]:
+#               Disturbances end at day 990; window starts 2 days later.
+#               Next disturbance starts at 1242; window ends at 1240.
+#               Clean window: 248 days.
 #
-#   A15 P2 — window [840, 1240]:
-#               Emplacement transient clears by ~day 120; next disturbance not
-#               until day 518–540 (before window), and day-1242 event (after).
+#   A15 P2 — window [542, 1240]:
+#               Disturbance (518–540) ends at 540; window starts 2 days later.
+#               Next disturbance starts at 1242; window ends at 1240.
+#               Clean window: 698 days (extended from prior [840, 1240]).
 #
-#   A17 P1 — window [520, 700]: after emplacement transient, before TG11B
-#               step at day 862.
+#   A17 P1 — window [62, 853]:
+#               Emplacement transient ends at day 60; window starts at 62.
+#               Next disturbance starts at 855; window ends at 853.
+#               Clean window: 791 days (extended from prior [520, 700]).
 #
-#   A17 P2 — window [530, 700]: 27 days after the day-503/504 TG21A/B step;
-#               ends before TG21A disturbance at day 714.
+#   A17 P2 — window [62, 494]:
+#               Emplacement transient ends at day 60; window starts at 62.
+#               Next disturbance (496–530) starts at 496; window ends at 494.
+#               Clean window: 432 days.  The later clean gap [532–705] is only
+#               173 days — the earlier window is chosen for length.
 #
 # Format: [(probe1_start, probe1_end), (probe2_start, probe2_end)]
 _STABLE_WINDOWS = {
-    'Apollo 15': [(990, 1240), (840, 1240)],
-    'Apollo 17': [(520,  700), (530,  700)],
+    'Apollo 15': [(992, 1240), (542, 1240)],
+    'Apollo 17': [( 62,  853), ( 62,  494)],
 }
 
 # Known discrepancy / disturbance regions (days since emplacement) per site
