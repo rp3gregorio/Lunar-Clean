@@ -458,6 +458,192 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 3b. TEMPERATURE GRADIENT PROFILE  (dT/dz vs depth)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apollo_gradient_profile(apollo_results, model_name, k_Wpm_pK=3.5e-3,
+                             figsize=(13, 6)):
+    """
+    Plot the measured temperature gradient (dT/dz, K/m) at each consecutive
+    sensor pair vs the model gradient, for both Apollo sites.
+
+    dT/dz is computed from adjacent equilibrium temperatures; multiplying by
+    the thermal conductivity k gives the local heat flux Q = k × dT/dz.
+    The Langseth et al. (1976) basal value is ~18 mW/m².
+
+    Parameters
+    ----------
+    apollo_results : same dict used by dual_apollo_comparison
+    model_name     : string for legend
+    k_Wpm_pK       : thermal conductivity (W/m/K); default 3.5e-3 W/m/K
+    """
+    sites  = ['Apollo 15', 'Apollo 17']
+    colors = ['#1A5276', '#7D3C98']
+    _, _, label = _model_style(model_name)
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=False)
+    fig.suptitle(
+        f'Temperature Gradient Profile  (dT/dz)  —  {label}\n'
+        f'Heat flux Q = k × dT/dz,  k = {k_Wpm_pK*1e3:.1f} mW/m/K',
+        fontsize=12, weight='bold', y=1.02)
+
+    for ax, site_name, dot_color in zip(axes, sites, colors):
+        if site_name not in apollo_results:
+            continue
+        errors   = apollo_results[site_name]['errors']
+        stats    = apollo_results[site_name]['stats']
+        z_grid   = stats['depth']
+        a_depths = errors['apollo_depths']
+        a_temps  = errors['apollo_temps']
+
+        dz_meas   = np.diff(a_depths)
+        dT_meas   = np.diff(a_temps)
+        grad_meas = dT_meas / dz_meas           # K/m
+        z_mid_cm  = 0.5 * (a_depths[:-1] + a_depths[1:]) * 100
+        Q_meas_mW = grad_meas * k_Wpm_pK * 1e3
+
+        grad_model = np.gradient(stats['T_mean'], z_grid)
+        mask = z_grid * 100 <= float(np.max(a_depths * 100)) * 1.6
+        ax.plot(grad_model[mask], z_grid[mask] * 100,
+                color='#C0392B', lw=2.0, ls='-', label=f'{label} dT/dz')
+
+        ax.scatter(grad_meas, z_mid_cm, s=60, color=dot_color,
+                   edgecolors='white', linewidths=1.0, zorder=5,
+                   label='Measured (adjacent pairs)')
+        for gm, zm, Qm in zip(grad_meas, z_mid_cm, Q_meas_mW):
+            ax.annotate(f'{Qm:+.1f} mW/m²',
+                        xy=(gm, zm), xytext=(5, 0),
+                        textcoords='offset points',
+                        fontsize=6, color=dot_color, va='center')
+
+        ax.axvline(0, color='#888', lw=0.8, ls='--')
+        ax.invert_yaxis()
+        # Clip x-axis to the sensor gradient range (avoid surface spike)
+        g_range = np.abs(grad_meas).max() * 1.5 + 0.01
+        ax.set_xlim(-g_range, g_range)
+        ax.set_xlabel('dT/dz  (K/m)', fontsize=11, weight='bold')
+        ax.set_ylabel('Depth (cm)',    fontsize=11, weight='bold')
+        ax.set_title(site_name, fontsize=12, weight='bold')
+        ax.legend(fontsize=8, framealpha=0.9)
+
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3c. SENSOR EQUILIBRATION TIMELINE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def sensor_equilibration(site_name, window_days=60, figsize=(14, 5)):
+    """
+    Show how the rolling-median temperature at each deep sensor (≥80 cm)
+    evolves over time.  A flat line = sensor has equilibrated.
+    The green band marks the stable window used for model validation.
+
+    Parameters
+    ----------
+    site_name    : 'Apollo 15' or 'Apollo 17'
+    window_days  : rolling window width (days) for the median
+    """
+    from lunar.hfe_loader import get_timeseries, STABLE_WINDOWS
+
+    probes  = get_timeseries(site_name)
+    windows = STABLE_WINDOWS[site_name]
+
+    fig, axes = plt.subplots(1, len(probes), figsize=figsize, sharey=False)
+    if len(probes) == 1:
+        axes = [axes]
+
+    fig.suptitle(
+        f'{site_name} — Sensor Equilibration  '
+        f'(rolling {window_days}-day median, deep sensors ≥80 cm)\n'
+        'Flat line = equilibrated.  Green band = stable window used for validation.',
+        fontsize=11, weight='bold', y=1.03)
+
+    _cmap = plt.cm.viridis_r
+
+    for ax, probe, (win_start, win_end) in zip(axes, probes, windows):
+        depths_shown = sorted(
+            [(d['depth_cm'], s, d) for s, d in probe.items()
+             if d['depth_cm'] >= 80],
+            key=lambda x: x[0])
+
+        if not depths_shown:
+            ax.set_visible(False)
+            continue
+
+        all_depths = [dc for dc, _, _ in depths_shown]
+        norm = Normalize(vmin=min(all_depths), vmax=max(all_depths))
+        half = window_days / 2
+
+        for d_cm, sensor, data in depths_shown:
+            t0    = data['times'][0].timestamp() / 86400
+            t_num = np.array([t.timestamp() / 86400 for t in data['times']]) - t0
+            temps = data['temps']
+
+            t_centers = np.arange(half, t_num[-1], window_days / 4)
+            roll_med  = [(tc, float(np.median(temps[(t_num >= tc-half) & (t_num <= tc+half)])))
+                         for tc in t_centers
+                         if ((t_num >= tc-half) & (t_num <= tc+half)).sum() >= 3]
+            if not roll_med:
+                continue
+            tc_arr, tm_arr = zip(*roll_med)
+            ax.plot(tc_arr, tm_arr, lw=1.4, color=_cmap(norm(d_cm)),
+                    label=f'{sensor} ({d_cm} cm)')
+
+        ax.axvspan(win_start, win_end, alpha=0.15, color='#2ECC71',
+                   label=f'Stable window ({win_start}–{win_end} d)')
+        ax.axvline(win_start, color='#1E8449', ls='--', lw=1.0, alpha=0.8)
+        ax.axvline(win_end,   color='#1E8449', ls=':',  lw=0.9, alpha=0.6)
+
+        probe_label = next(iter(probe.values()))['probe_label']
+        ax.set_title(probe_label, fontsize=11, weight='bold')
+        ax.set_xlabel('Days since emplacement', fontsize=10, weight='bold')
+        ax.set_ylabel('Rolling median T (K)',   fontsize=10, weight='bold')
+        ax.legend(fontsize=7, ncol=1, framealpha=0.9, loc='upper right')
+
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3d. PARAMETER SENSITIVITY HEATMAP  (RMSE vs sunscale × chi)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def sensitivity_heatmap(rmse_grid, sunscale_vals, chi_vals,
+                        site_name='Apollo 15', figsize=(7, 5)):
+    """
+    2-D heatmap of RMSE vs (sunscale, chi).  Highlights the global minimum.
+
+    Parameters
+    ----------
+    rmse_grid     : 2-D array shape (len(sunscale_vals), len(chi_vals))
+    sunscale_vals : 1-D array of sunscale values  (rows)
+    chi_vals      : 1-D array of chi values        (columns)
+    site_name     : used in title
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    im = ax.imshow(rmse_grid.T, origin='lower', aspect='auto',
+                   cmap='RdYlGn_r',
+                   extent=[sunscale_vals[0], sunscale_vals[-1],
+                            chi_vals[0],      chi_vals[-1]])
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label('RMSE (K)', fontsize=10, weight='bold')
+
+    imin, jmin = np.unravel_index(np.argmin(rmse_grid), rmse_grid.shape)
+    ax.plot(sunscale_vals[imin], chi_vals[jmin], 'w*', markersize=14,
+            label=f'Min RMSE = {rmse_grid[imin,jmin]:.2f} K\n'
+                  f'sunscale = {sunscale_vals[imin]:.2f},  χ = {chi_vals[jmin]:.1f}')
+    ax.set_xlabel('Sunscale', fontsize=11, weight='bold')
+    ax.set_ylabel('χ (radiative conductivity param)', fontsize=11, weight='bold')
+    ax.set_title(f'{site_name} — RMSE Sensitivity (sunscale × χ)',
+                 fontsize=12, weight='bold')
+    ax.legend(fontsize=9, framealpha=0.9, loc='upper right')
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 4. MODEL COMPARISON  (Discrete vs Hayne — or any set of models)
 # ─────────────────────────────────────────────────────────────────────────────
 
