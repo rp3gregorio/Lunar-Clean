@@ -588,7 +588,11 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     # Per-probe discrepancy regions
     site_discrepancies = _DISCREPANCY_REGIONS.get(site_name, {})
 
-    # Sensor-type style lookup  (prefix → (linestyle, linewidth, alpha))
+    # Depth threshold below which sensors are excluded from the equilibrium /
+    # validation calculation (matches get_equilibrium_temps min_depth_cm=80).
+    _VALIDATION_MIN_DEPTH = 80   # cm
+
+    # Sensor-type style lookup  (prefix → (linestyle, linewidth, base_alpha))
     #   TG = official gradient-bridge primary sensors
     #   TR = supplementary reference thermocouples
     #   TC = shallow cable sensors (diurnal zone, not used for heat flow)
@@ -618,13 +622,20 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
             t_num = t_num - t0        # days since emplacement
 
             # Sensor type from two-letter prefix
-            # TG = official gradient-bridge (Langseth et al. 1976 primary science sensors)
-            # TR = supplementary reference thermometer (differential, not gradient)
-            # TC = cable thermocouple (shallow/diurnal zone, not used for heat flow)
             prefix = ''.join(c for c in sensor if c.isalpha())[:2]
             ls, lw, alpha = _style.get(prefix, ('-', 1.2, 0.80))
+
+            # Sensors shallower than the validation threshold are excluded from
+            # the equilibrium-temperature calculation.  Dim them and flag clearly.
+            used_in_validation = d_cm >= _VALIDATION_MIN_DEPTH
+            if not used_in_validation:
+                alpha *= 0.45          # visually subordinate
+                ls     = ':'           # override to dotted regardless of type
+
             type_labels = {'TG': 'official', 'TR': 'supplementary', 'TC': 'non-official'}
             type_tag = f' [{type_labels.get(prefix, prefix)}]'
+            if not used_in_validation:
+                type_tag += ' · excl. from validation'
 
             ax.plot(t_num, temps, lw=lw, ls=ls, color=color, alpha=alpha,
                     label=f'{sensor}  ({d_cm} cm){type_tag}')
@@ -644,38 +655,46 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
         win_start, win_end = pw if pw is not None else (t_stable_final, t_end_final)
 
         # ── Discrepancy regions (orange bands) ───────────────────────────────
-        # Only draw regions that fall within or directly adjacent to the stable
-        # window (within 300 days of either boundary).  Distant early disturbances
-        # (emplacement transient, pre-equilibration events) are omitted — they are
-        # already self-evident from the emplacement spike at day 0.
+        # Only draw regions adjacent to the stable window (within 300 days).
         disc_regions = site_discrepancies.get(probe_idx, [])
         _disc_label_added = False
-        for reg_start, reg_end, _reg_desc in disc_regions:
+        for reg_start, reg_end, reg_desc in disc_regions:
             r_end = reg_end if reg_end is not None else probe_t_max + 50
-            # Skip if entirely outside a 300-day halo around the stable window
             if r_end < win_start - 300 or reg_start > win_end + 300:
                 continue
             disc_lbl = 'Discrepancy / disturbance' if not _disc_label_added else '_nolegend_'
             _disc_label_added = True
             ax.axvspan(reg_start, r_end,
-                       alpha=0.10, color='#E67E22', zorder=1,
+                       alpha=0.12, color='#E67E22', zorder=1,
                        label=disc_lbl)
+            # Boundary tick + day label at start of disturbance
+            ax.axvline(reg_start, color='#E67E22', ls='--', lw=0.9, alpha=0.7, zorder=2)
+            ax.text(reg_start + 4, 0.98, f'Day {int(reg_start)}\n{reg_desc}',
+                    transform=ax.get_xaxis_transform(),
+                    fontsize=5.5, va='top', ha='left', color='#B7770D',
+                    rotation=0, clip_on=True)
 
         # ── Stable window (green band) ────────────────────────────────────────
         ax.axvspan(win_start, win_end,
                    alpha=0.14, color='#2ECC71', zorder=2,
-                   label='Stable window (validation)')
-        ax.axvline(win_start, color='#1E8449', ls='--',
-                   lw=1.4, alpha=0.85, zorder=3)
-        ax.axvline(win_end,   color='#1E8449', ls=':',
-                   lw=1.2, alpha=0.65, zorder=3)
+                   label=f'Stable window (≥{_VALIDATION_MIN_DEPTH} cm, used for validation)')
+        # Left boundary — dashed + day label
+        ax.axvline(win_start, color='#1E8449', ls='--', lw=1.4, alpha=0.85, zorder=3)
+        ax.text(win_start + 4, 0.02, f'Day {int(win_start)}\n(window start)',
+                transform=ax.get_xaxis_transform(),
+                fontsize=6, va='bottom', ha='left', color='#1E8449', clip_on=True)
+        # Right boundary — dotted + day label
+        ax.axvline(win_end, color='#1E8449', ls=':', lw=1.2, alpha=0.65, zorder=3)
+        ax.text(win_end - 4, 0.02, f'Day {int(win_end)}\n(window end)',
+                transform=ax.get_xaxis_transform(),
+                fontsize=6, va='bottom', ha='right', color='#1E8449', clip_on=True)
 
         probe_label = next(iter(probe.values()))['probe_label']
         ax.set_title(probe_label, fontsize=13, weight='bold', pad=8)
         ax.set_xlabel('Days since emplacement', fontsize=12, weight='bold')
         ax.set_ylabel('Temperature (K)',        fontsize=12, weight='bold')
 
-        leg = ax.legend(fontsize=7.5, ncol=1,
+        leg = ax.legend(fontsize=7.0, ncol=1,
                         loc='upper right', framealpha=0.93,
                         edgecolor='#cccccc',
                         handlelength=2.0)
@@ -695,8 +714,9 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
     fig.suptitle(
         f'{site_name} — HFE Probe Temperature History\n'
         'TG = official (gradient bridge) · TR = supplementary · TC = shallow/diurnal  |  '
-        'Green = stable window · Orange = discrepancy region',
-        fontsize=11, weight='bold', y=1.02,
+        f'Green = stable window (≥{80} cm sensors used for validation) · '
+        'Orange = disturbance region  ·  Dotted sensors = excluded from validation',
+        fontsize=10, weight='bold', y=1.02,
     )
     return fig
 
