@@ -59,13 +59,18 @@ _APOLLO_17_FALLBACK = [
 
 def _load_apollo_data():
     """Load equilibrium temperatures from HFE files; fall back to literals."""
+    def _normalise(rows):
+        """Ensure every row is a (depth_m, T_K, sensor_type) 3-tuple.
+        Old versions of get_equilibrium_temps returned 2-tuples; pad those."""
+        return [r if len(r) == 3 else (*r, 'TG') for r in rows]
+
     try:
         from lunar.hfe_loader import get_equilibrium_temps
-        a15 = get_equilibrium_temps('Apollo 15')  # [(depth_m, T_K, type), ...]
-        a17 = get_equilibrium_temps('Apollo 17')
+        a15 = _normalise(get_equilibrium_temps('Apollo 15'))
+        a17 = _normalise(get_equilibrium_temps('Apollo 17'))
         return a15, a17
     except Exception:
-        # Fallback 2-tuples: tag everything as 'TG' (conservative)
+        # Fallback literals: tag everything as 'TG' (conservative)
         a15 = [(d, T, 'TG') for d, T in _APOLLO_15_FALLBACK]
         a17 = [(d, T, 'TG') for d, T in _APOLLO_17_FALLBACK]
         return a15, a17
