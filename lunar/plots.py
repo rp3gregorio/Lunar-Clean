@@ -315,17 +315,27 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         residuals = errors['residuals']
         dot_color = colors[col]
 
-        # ── Depth axis: zoom to the measurement region with context ───────────
-        # Apollo 15 sensors: 84–139 cm  |  Apollo 17 sensors: 130–234 cm
-        # Show down to 1.6× the deepest sensor so the shape is visible.
+        # ── Depth axis: zoom to include shallowest sensor at top ─────────────
         max_meas_cm = float(np.max(a_depths * 100))
+        min_meas_cm = float(np.min(a_depths * 100))
         y_max_cm    = min(320.0, max(150.0, max_meas_cm * 1.6))
 
         # ── Row 0: temperature profiles ───────────────────────────────────────
         ax0 = fig.add_subplot(gs[0, col])
 
-        # Clip model arrays to the displayed depth range (avoids confusing
-        # flat tail that dominates a 0–300 cm axis)
+        # Diurnal zone band (0–80 cm) — TC sensors live here; their equilibrium
+        # T is the stable-window median but with higher diurnal spread.
+        _DIURNAL_ZONE_CM = 80
+        ax0.axhspan(0, _DIURNAL_ZONE_CM, color='#F5CBA7', alpha=0.18, zorder=0,
+                    label='Diurnal zone (TC, <80 cm)')
+        ax0.axhline(_DIURNAL_ZONE_CM, color='#B7770D', lw=0.9, ls='--',
+                    alpha=0.55, zorder=1)
+        ax0.text(0.01, _DIURNAL_ZONE_CM + 1,
+                 '80 cm — diurnal boundary',
+                 fontsize=6.0, color='#8B6914', va='top', ha='left',
+                 transform=ax0.get_yaxis_transform())
+
+        # Clip model arrays to the displayed depth range
         mask = z_grid * 100 <= y_max_cm * 1.05
         ax0.plot(stats['T_mean'][mask], z_grid[mask] * 100,
                  color=color, ls=ls, linewidth=2.5, label=f'{label} (mean)')
@@ -333,24 +343,54 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                           stats['T_min'][mask], stats['T_max'][mask],
                           color=color, alpha=0.18, label='Diurnal range')
 
-        # Measurement dots — differentiate TG (primary) vs TR (secondary)
+        # Three marker styles by sensor type:
+        #   TG (●) = gradient bridge — measures dT/dz directly, official
+        #   TR (■) = reference thermocouple — absolute T at depth
+        #   TC (▲) = cable thermocouple — shallow/diurnal zone
         sensor_types = errors.get('apollo_sensor_types',
                                   ['TG'] * len(a_depths))
-        tg_mask = np.array([st == 'TG' for st in sensor_types])
-        tr_mask = ~tg_mask
+        st_arr  = np.array(sensor_types)
+        tg_mask = st_arr == 'TG'
+        tr_mask = st_arr == 'TR'
+        tc_mask = st_arr == 'TC'
 
         if tg_mask.any():
             ax0.plot(a_temps[tg_mask], a_depths[tg_mask] * 100,
                      'o', color=dot_color,
                      markersize=9, markeredgewidth=1.3,
                      markeredgecolor='white', zorder=6,
-                     label=f'{site_name} TG (primary, official depth)')
+                     label=f'{site_name} TG — gradient bridge (official)')
         if tr_mask.any():
             ax0.plot(a_temps[tr_mask], a_depths[tr_mask] * 100,
                      's', color=dot_color,
                      markersize=7, markeredgewidth=1.3,
-                     markeredgecolor='white', alpha=0.55, zorder=5,
-                     label=f'{site_name} TR (secondary sensor)')
+                     markeredgecolor='white', alpha=0.75, zorder=5,
+                     label=f'{site_name} TR — reference thermocouple')
+        if tc_mask.any():
+            ax0.plot(a_temps[tc_mask], a_depths[tc_mask] * 100,
+                     '^', color=dot_color,
+                     markersize=7, markeredgewidth=1.0,
+                     markeredgecolor='white', alpha=0.50, zorder=4,
+                     label=f'{site_name} TC — cable (diurnal zone)')
+
+        # ── Discrepancy-exclusion annotation ──────────────────────────────────
+        from lunar.hfe_loader import _STABLE_WINDOWS, _DISCREPANCY_REGIONS
+        _sw   = _STABLE_WINDOWS.get(site_name, [])
+        _dr   = _DISCREPANCY_REGIONS.get(site_name, {})
+        _excl = []
+        for _pi, _regions in _dr.items():
+            _win = _sw[_pi] if _pi < len(_sw) else None
+            for _rs, _re, _rd in _regions:
+                if _win and (_rs > _win[1] or (_re or 9999) < _win[0]):
+                    _excl.append(f'P{_pi+1}: day {_rs}–{_re or "end"} · {_rd}')
+        if _excl:
+            ax0.text(0.02, 0.03,
+                     'Excl. from stable window:\n' + '\n'.join(_excl),
+                     transform=ax0.transAxes,
+                     fontsize=5.5, va='bottom', ha='left', color='#555',
+                     bbox=dict(boxstyle='round,pad=0.35',
+                               facecolor='#fff9e6', edgecolor='#ccc',
+                               alpha=0.90))
 
         # Annotate deepest measurement depth
         ax0.axhline(max_meas_cm, color=dot_color, ls='--',
@@ -382,7 +422,10 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
                        fontsize=11, weight='bold')
         ax1.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
         ax1.set_title('Model − Measured', fontsize=12, weight='bold', pad=6)
-        ax1.set_ylim(y_max_cm * 0.55, max(0, float(np.min(d_cm)) - 2))
+        ax1.set_ylim(y_max_cm * 0.55, max(0, float(np.min(d_cm)) - 5))
+        # If TC sensors push shallower than the default top, expand upward
+        if float(np.min(d_cm)) < y_max_cm * 0.55 * 0.7:
+            ax1.set_ylim(y_max_cm * 0.55, float(np.min(d_cm)) - 5)
         ax1.invert_yaxis()
 
         # Minimal stats annotation inside the residuals panel

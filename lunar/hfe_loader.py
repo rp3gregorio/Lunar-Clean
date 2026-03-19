@@ -154,7 +154,7 @@ def load_site(site_name):
     return probes
 
 
-def get_equilibrium_temps(site_name, min_depth_cm=80):
+def get_equilibrium_temps(site_name, min_depth_cm=0):
     """
     Derive equilibrium temperature at each depth using the explicit stable
     windows defined in ``_STABLE_WINDOWS``.
@@ -166,6 +166,10 @@ def get_equilibrium_temps(site_name, min_depth_cm=80):
     temperature.  The median is robust to occasional noise spikes.  Where
     multiple sensors share the same nominal depth (e.g. paired gradient-bridge
     A/B elements), their stable medians are averaged to give a single value.
+
+    All known discrepancy/disturbance windows (see ``_DISCREPANCY_REGIONS``)
+    are already excluded by design: the stable windows are chosen to be
+    strictly between disturbances, so no special per-sensor masking is needed.
 
     Depth filter
     ------------
