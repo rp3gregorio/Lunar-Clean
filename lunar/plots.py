@@ -2189,52 +2189,66 @@ def combined_heat_flow(apollo_results, model_name,
 # NEW FUNCTIONS — borestem corrections, albedo comparison, polar diurnal, etc.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def albedo_comparison(stats_undisturbed, stats_disturbed,
-                      z_idx=0, figsize=(13, 5)):
+def albedo_comparison(stats_und, cycles_und, stats_dis, cycles_dis,
+                      depth=0.0, lat=None, lon=None, figsize=(13, 5)):
     """Side-by-side diurnal surface temperature for two albedo cases.
 
     Parameters
     ----------
-    stats_undisturbed : dict  — output of model.run() with A=0.09
-    stats_disturbed   : dict  — output of model.run() with A=0.12
-    z_idx             : int   — depth index to plot (0 = surface)
+    stats_und  : dict — extract_stats() output for undisturbed albedo (A=0.09)
+    cycles_und : dict — get_diurnal_cycles() output for undisturbed albedo
+    stats_dis  : dict — extract_stats() output for disturbed albedo (A=0.12)
+    cycles_dis : dict — get_diurnal_cycles() output for disturbed albedo
+    depth      : float — depth in metres to plot (default 0.0 = surface)
+    lat, lon   : float — site coordinates for the title
     """
     fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
 
-    labels  = ['Undisturbed (A = 0.09)', 'Disturbed (A = 0.12)']
-    colors  = ['#2196F3', '#F44336']
-    all_stats = [stats_undisturbed, stats_disturbed]
+    pairs = [
+        (stats_und, cycles_und, 'Undisturbed (A = 0.09)', '#2196F3'),
+        (stats_dis, cycles_dis, 'Disturbed  (A = 0.12)',  '#F44336'),
+    ]
 
-    for ax, st, label, color in zip(axes, all_stats, labels, colors):
-        cycle = st.get('diurnal_cycle', {})
-        t_hr  = np.asarray(cycle.get('t_hours', []))
-        T_mat = np.asarray(cycle.get('T_matrix', [[]]))
-        if T_mat.ndim == 2 and T_mat.shape[0] > z_idx:
-            T = T_mat[z_idx]
-        elif T_mat.ndim == 1:
-            T = T_mat
+    for ax, (st, cyc, label, color) in zip(axes, pairs):
+        # Find the closest available depth in the cycles dict
+        available = sorted(cyc.keys())
+        best_d    = min(available, key=lambda d: abs(d - depth)) if available else None
+
+        if best_d is not None and best_d in cyc:
+            entry = cyc[best_d]
+            t_hr  = np.asarray(entry['time_h'])
+            T     = np.asarray(entry['temperature'])
         else:
-            T = np.full_like(t_hr, np.nan)
+            t_hr = np.array([])
+            T    = np.array([])
 
-        ax.plot(t_hr, T - 273.15, lw=2.2, color=color)
-        ax.axhline(np.nanmean(T) - 273.15, color=color, ls='--',
-                   lw=1.2, alpha=0.6, label=f'Mean = {np.nanmean(T)-273.15:.1f} °C')
+        if T.size:
+            ax.plot(t_hr, T - 273.15, lw=2.2, color=color)
+            ax.axhline(np.nanmean(T) - 273.15, color=color, ls='--',
+                       lw=1.2, alpha=0.6,
+                       label=f'Mean = {np.nanmean(T) - 273.15:.1f} °C')
+        else:
+            ax.text(0.5, 0.5, 'No data', ha='center', va='center',
+                    transform=ax.transAxes)
+
         ax.set_title(label)
         ax.set_xlabel('Lunar Local Time (hours)')
         ax.set_ylabel('Temperature (°C)')
         ax.legend(fontsize=9)
-        ax.set_xlim(0, t_hr[-1] if len(t_hr) else 708)
+        if t_hr.size:
+            ax.set_xlim(0, t_hr[-1])
         ax.grid(True, alpha=0.3)
 
-    lat = stats_undisturbed.get('lat', '?')
-    lon = stats_undisturbed.get('lon', '?')
+    lat_str = f'{lat:.4f}' if lat is not None else '?'
+    lon_str = f'{lon:.4f}' if lon is not None else '?'
     fig.suptitle(f'Albedo Effect on Diurnal Surface Temperature\n'
-                 f'Lat {lat}°  Lon {lon}°', fontsize=12)
+                 f'Lat {lat_str}°  Lon {lon_str}°', fontsize=12)
     plt.tight_layout()
     return fig
 
 
-def polar_diurnal(stats, depths_m=(0.0, 0.35, 1.0, 2.0), figsize=(9, 9)):
+def polar_diurnal(cycles, depths_m=(0.0, 0.35, 1.0, 2.0),
+                  lat=None, lon=None, figsize=(9, 9)):
     """Clock-face polar plot of temperature vs lunar local time at multiple depths.
 
     The radial axis is temperature (K); the angular axis is local time
@@ -2242,73 +2256,51 @@ def polar_diurnal(stats, depths_m=(0.0, 0.35, 1.0, 2.0), figsize=(9, 9)):
 
     Parameters
     ----------
-    stats    : dict  — output of model.run() containing 'diurnal_cycle'
-    depths_m : tuple — sensor depths to overlay (in metres)
+    cycles   : dict  — output of analysis.get_diurnal_cycles()
+                       keyed by depth (float, metres), each entry has
+                       'time_h' and 'temperature' arrays
+    depths_m : tuple — depths to overlay; closest available depth is used
+    lat, lon : float — site coordinates for the title
     """
-    cycle  = stats.get('diurnal_cycle', {})
-    t_hr   = np.asarray(cycle.get('t_hours', []))
-    T_mat  = np.asarray(cycle.get('T_matrix', [[]]))
-    z_grid = np.asarray(stats.get('z_grid', []))
-
-    if t_hr.size == 0 or T_mat.size == 0:
+    if not cycles:
         fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=figsize)
         ax.set_title('No diurnal cycle data available')
         return fig
 
-    # Angular coordinates: 0 h → top (π/2 shift), clockwise → negate
-    theta = 2 * np.pi * t_hr / t_hr[-1]          # 0 … 2π
-    theta_plot = np.pi / 2 - theta                # clock-face: top = 0 h
-
-    colors = plt.cm.plasma(np.linspace(0.15, 0.9, len(depths_m)))
+    available = sorted(cycles.keys())
+    colors     = plt.cm.plasma(np.linspace(0.15, 0.9, len(depths_m)))
 
     fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=figsize)
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
 
     for depth, color in zip(depths_m, colors):
-        if z_grid.size > 0:
-            idx = int(np.argmin(np.abs(z_grid - depth)))
-            actual_depth = z_grid[idx]
-        else:
-            idx = 0
-            actual_depth = depth
+        best_d = min(available, key=lambda d: abs(d - depth))
+        entry  = cycles[best_d]
+        t_hr   = np.asarray(entry['time_h'])
+        T      = np.asarray(entry['temperature'])
+        actual = entry.get('actual_depth', best_d)
 
-        if T_mat.ndim == 2 and T_mat.shape[0] > idx:
-            T = T_mat[idx]
-        else:
+        if t_hr.size < 2:
             continue
+
+        # Map time to angle: 0 h → North (top), clockwise
+        theta = 2 * np.pi * t_hr / t_hr[-1]
 
         # Close the loop
-        theta_c = np.append(theta, theta[0])
-        T_c     = np.append(T, T[0])
-        ax.plot(theta_c * np.pi / 180 * 0 + 2 * np.pi * np.arange(len(theta_c)) / len(theta_c),
-                T_c, lw=2, color=color, label=f'{actual_depth*100:.0f} cm')
-
-    # Replot with correct angles
-    ax.cla()
-    ax.set_theta_zero_location('N')
-    ax.set_theta_direction(-1)
-    for depth, color in zip(depths_m, colors):
-        if z_grid.size > 0:
-            idx = int(np.argmin(np.abs(z_grid - depth)))
-            actual_depth = z_grid[idx]
-        else:
-            idx = 0; actual_depth = depth
-        if T_mat.ndim == 2 and T_mat.shape[0] > idx:
-            T = T_mat[idx]
-        else:
-            continue
         ang = np.append(theta, theta[0])
         T_c = np.append(T, T[0])
-        ax.plot(ang, T_c, lw=2, color=color, label=f'{actual_depth*100:.0f} cm')
+        ax.plot(ang, T_c, lw=2, color=color, label=f'{actual*100:.0f} cm')
 
     hour_labels = ['0 h', '3 h', '6 h', '9 h', '12 h', '15 h', '18 h', '21 h']
     ax.set_xticks(np.linspace(0, 2 * np.pi, 8, endpoint=False))
     ax.set_xticklabels(hour_labels)
     ax.set_ylabel('Temperature (K)', labelpad=40)
     ax.legend(loc='lower right', bbox_to_anchor=(1.25, -0.05), title='Depth')
-    lat = stats.get('lat', '?'); lon = stats.get('lon', '?')
-    ax.set_title(f'Polar Diurnal Temperature\nLat {lat}°  Lon {lon}°',
+
+    lat_str = f'{lat:.4f}' if lat is not None else '?'
+    lon_str = f'{lon:.4f}' if lon is not None else '?'
+    ax.set_title(f'Polar Diurnal Temperature\nLat {lat_str}°  Lon {lon_str}°',
                  pad=20, fontsize=12)
     plt.tight_layout()
     return fig
