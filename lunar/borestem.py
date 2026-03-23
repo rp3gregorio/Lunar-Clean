@@ -270,20 +270,24 @@ def apply_all_corrections(
     apply_borestem: bool = True,
     apply_probe_top: bool = True,
     probe_length_m: float = 2.5,
+    use_2d_borestem: bool = True,
 ) -> tuple[np.ndarray, dict]:
     """
     Apply borestem and probe-top corrections to a mean temperature profile.
 
     Parameters
     ----------
-    T_mean        : array (n,) — uncorrected mean temperature at each depth (K)
-    z_grid        : array (n,) — depth grid (m)
-    k_profile     : array (n,) — conductivity profile (W/m/K)
-    T_surf_mean   : float — mean surface temperature (K)
-    Q_solar_mean  : float — mean absorbed solar flux (W/m²)  [daytime average]
-    apply_borestem: if True, include fiberglass borestem correction
-    apply_probe_top: if True, include probe-top solar radiation correction
-    probe_length_m: length of probe for taper calculation (m)
+    T_mean           : array (n,) — uncorrected mean temperature at each depth (K)
+    z_grid           : array (n,) — depth grid (m)
+    k_profile        : array (n,) — conductivity profile (W/m/K)
+    T_surf_mean      : float — mean surface temperature (K)
+    Q_solar_mean     : float — mean absorbed solar flux (W/m²)  [daytime average]
+    apply_borestem   : if True, include fiberglass borestem correction
+    apply_probe_top  : if True, include probe-top solar radiation correction
+    probe_length_m   : length of probe for taper calculation (m)
+    use_2d_borestem  : if True (default), use the physically correct 2-D
+                       axisymmetric FD solver (borestem2d); if False, fall back
+                       to the faster 1-D parallel-composite approximation.
 
     Returns
     -------
@@ -293,18 +297,26 @@ def apply_all_corrections(
         'probe_top'    — correction from solar heating of probe top (K)
         'total'        — sum of all corrections (K)
         'k_eff'        — borestem-effective conductivity (W/m/K) or None
+        'borestem_method' — '2d_cylindrical' or '1d_composite'
     """
     T_corr = np.array(T_mean, dtype=float)
     zeros  = np.zeros_like(z_grid)
     k_eff_out = None
 
     if apply_borestem:
-        dT_bs, k_eff_out = borestem_temperature_correction(
-            z_grid, T_mean, k_profile, T_surf_mean
-        )
+        if use_2d_borestem:
+            from lunar.borestem2d import borestem_2d_correction
+            dT_bs = borestem_2d_correction(z_grid, T_mean, k_profile, T_surf_mean)
+            method = '2d_cylindrical'
+        else:
+            dT_bs, k_eff_out = borestem_temperature_correction(
+                z_grid, T_mean, k_profile, T_surf_mean
+            )
+            method = '1d_composite'
         T_corr += dT_bs
     else:
-        dT_bs = zeros.copy()
+        dT_bs  = zeros.copy()
+        method = 'none'
 
     if apply_probe_top:
         dT_pt = probe_top_correction_profile(Q_solar_mean, z_grid, probe_length_m)
@@ -313,10 +325,11 @@ def apply_all_corrections(
         dT_pt = zeros.copy()
 
     return T_corr, {
-        'borestem':  dT_bs,
-        'probe_top': dT_pt,
-        'total':     dT_bs + dT_pt,
-        'k_eff':     k_eff_out,
+        'borestem':        dT_bs,
+        'probe_top':       dT_pt,
+        'total':           dT_bs + dT_pt,
+        'k_eff':           k_eff_out,
+        'borestem_method': method,
     }
 
 

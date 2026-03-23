@@ -2418,6 +2418,129 @@ def borestem_correction_plot(stats, apollo_data, site_name,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# BORESTEM 2-D FIELD FIGURE
+# ─────────────────────────────────────────────────────────────────────────────
+
+def borestem_2d_field_plot(T_2d, r_grid, z_grid, T_mean, dT_bs,
+                            lat=None, lon=None, model_name=None,
+                            depth_limit=2.6, figsize=(14, 7)):
+    """
+    Two-panel publication figure for the 2-D axisymmetric borestem temperature field.
+
+    Left panel  : T(r, z) heatmap (inferno colourmap, z increasing downward)
+                  Borestem wall boundaries (r_i, r_o) marked with dashed lines.
+                  White iso-temperature contours every ≈ 10 K.
+
+    Right panel : ΔT_bs(z) lollipop chart — warm bias at the sensor axis vs depth.
+                  Matches the lollipop style used in apollo_comparison().
+
+    Parameters
+    ----------
+    T_2d       : (n_z, n_r) temperature field from solve_borestem_2d_steady()
+    r_grid     : (n_r,) radial positions (m)
+    z_grid     : (n_z,) depth positions (m)
+    T_mean     : (n_z,) undisturbed 1-D mean temperature (K)
+    dT_bs      : (n_z,) warm bias  T_axis − T_mean  (K)
+    lat, lon   : float — site coordinates for subtitle
+    model_name : str or None
+    depth_limit: float — maximum depth to display (m)
+    """
+    from lunar.constants import BORESTEM_OUTER_RADIUS_M, BORESTEM_WALL_M, BORESTEM_DEPTH_M
+
+    r_i = BORESTEM_OUTER_RADIUS_M - BORESTEM_WALL_M   # inner wall face
+    r_o = BORESTEM_OUTER_RADIUS_M                      # outer wall face
+
+    # ── Restrict to depth_limit ───────────────────────────────────────────────
+    i_z  = np.where(z_grid <= depth_limit)[0]
+    z_cm = z_grid[i_z] * 100.0
+    T_sub = T_2d[i_z, :]
+    dT_sub = dT_bs[i_z]
+
+    r_cm = r_grid * 100.0
+
+    fig = plt.figure(figsize=figsize)
+    gs  = gridspec.GridSpec(1, 2, width_ratios=[3, 1], wspace=0.12)
+    ax_map = fig.add_subplot(gs[0, 0])
+    ax_dT  = fig.add_subplot(gs[0, 1])
+
+    # ── Left: 2-D temperature field ───────────────────────────────────────────
+    pm = ax_map.pcolormesh(
+        r_cm, z_cm, T_sub,
+        cmap='inferno', shading='gouraud',
+        vmin=np.nanmin(T_sub), vmax=np.nanmax(T_sub),
+    )
+    # Iso-temperature contours
+    n_r_s = max(1, len(r_cm) // 60)
+    n_z_s = max(1, len(z_cm) // 80)
+    cs = ax_map.contour(
+        r_cm[::n_r_s], z_cm[::n_z_s], T_sub[::n_z_s, ::n_r_s],
+        levels=8, colors='white', linewidths=0.6, alpha=0.40,
+    )
+    ax_map.clabel(cs, inline=True, fontsize=7.5, fmt='%d K', use_clabeltext=True)
+
+    cbar = plt.colorbar(pm, ax=ax_map, pad=0.02, fraction=0.035)
+    cbar.set_label('Temperature (K)')
+    cbar.ax.tick_params(labelsize=9)
+
+    # Borestem wall boundaries
+    bore_depth_cm = min(BORESTEM_DEPTH_M * 100, depth_limit * 100)
+    for r_wall, label, ls in [(r_i * 100, f'r_i = {r_i*100:.2f} cm', '--'),
+                               (r_o * 100, f'r_o = {r_o*100:.2f} cm', '-.')]:
+        ax_map.plot([r_wall, r_wall], [0, bore_depth_cm],
+                    color='cyan', lw=1.6, ls=ls,
+                    label=f'Borestem wall  ({label})', zorder=5)
+    ax_map.axhline(bore_depth_cm, color='cyan', lw=1.2, ls=':', alpha=0.7,
+                   label=f'Casing end  ({BORESTEM_DEPTH_M:.1f} m)', zorder=5)
+
+    ax_map.invert_yaxis()
+    ax_map.set_xlabel('Radius  r  (cm)', fontsize=11, weight='bold')
+    ax_map.set_ylabel('Depth   z  (cm)', fontsize=11, weight='bold')
+    ax_map.legend(fontsize=8, framealpha=0.95, loc='lower right')
+
+    lat_str = f'{lat:.3f}' if lat is not None else '?'
+    lon_str = f'{lon:.3f}' if lon is not None else '?'
+    ax_map.set_title(
+        f'2-D Borestem Temperature Field  T(r, z)\n'
+        f'{_subtitle(lat, lon, model_name) if lat is not None else ""}',
+        fontsize=12, weight='bold',
+    )
+
+    # ── Right: ΔT lollipop ────────────────────────────────────────────────────
+    # Lollipop style matching apollo_comparison() residual panel
+    ax_dT.hlines(z_cm, 0, dT_sub,
+                 color='#E67E22', linewidth=2.0, alpha=0.85, zorder=3)
+    ax_dT.scatter(dT_sub, z_cm,
+                  s=55, color='#E67E22', edgecolors='white',
+                  linewidths=1.0, zorder=4)
+    ax_dT.axvline(0, color='#333', lw=0.9, ls='--')
+
+    # Annotate peak bias
+    if dT_sub.size:
+        i_peak = np.argmax(np.abs(dT_sub))
+        ax_dT.annotate(
+            f'{dT_sub[i_peak]:+.2f} K',
+            xy=(dT_sub[i_peak], z_cm[i_peak]),
+            xytext=(6, 0), textcoords='offset points',
+            fontsize=8, color='#A04000', va='center',
+        )
+
+    ax_dT.invert_yaxis()
+    ax_dT.set_xlabel('Warm bias  ΔT  (K)', fontsize=11, weight='bold')
+    ax_dT.set_title('Sensor\nwarm bias', fontsize=12, weight='bold')
+    ax_dT.yaxis.set_ticklabels([])
+    ax_dT.set_ylim(ax_map.get_ylim())
+
+    fig.suptitle(
+        f'Apollo HFE Borestem Correction — 2-D Axisymmetric Steady-State\n'
+        f'Fiberglass wall  k = {0.04:.3f} W/m/K  ·  '
+        f'Outer radius {r_o*100:.2f} cm  ·  Depth {BORESTEM_DEPTH_M:.1f} m',
+        fontsize=13, weight='bold',
+    )
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PROBE-TOP RADIATION: WARM BIAS VS DEPTH
 # ─────────────────────────────────────────────────────────────────────────────
 
