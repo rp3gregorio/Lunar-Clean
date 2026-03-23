@@ -2183,3 +2183,271 @@ def combined_heat_flow(apollo_results, model_name,
         fontsize=11)
     plt.tight_layout()
     return fig
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEW FUNCTIONS — borestem corrections, albedo comparison, polar diurnal, etc.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def albedo_comparison(stats_undisturbed, stats_disturbed,
+                      z_idx=0, figsize=(13, 5)):
+    """Side-by-side diurnal surface temperature for two albedo cases.
+
+    Parameters
+    ----------
+    stats_undisturbed : dict  — output of model.run() with A=0.09
+    stats_disturbed   : dict  — output of model.run() with A=0.12
+    z_idx             : int   — depth index to plot (0 = surface)
+    """
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=True)
+
+    labels  = ['Undisturbed (A = 0.09)', 'Disturbed (A = 0.12)']
+    colors  = ['#2196F3', '#F44336']
+    all_stats = [stats_undisturbed, stats_disturbed]
+
+    for ax, st, label, color in zip(axes, all_stats, labels, colors):
+        cycle = st.get('diurnal_cycle', {})
+        t_hr  = np.asarray(cycle.get('t_hours', []))
+        T_mat = np.asarray(cycle.get('T_matrix', [[]]))
+        if T_mat.ndim == 2 and T_mat.shape[0] > z_idx:
+            T = T_mat[z_idx]
+        elif T_mat.ndim == 1:
+            T = T_mat
+        else:
+            T = np.full_like(t_hr, np.nan)
+
+        ax.plot(t_hr, T - 273.15, lw=2.2, color=color)
+        ax.axhline(np.nanmean(T) - 273.15, color=color, ls='--',
+                   lw=1.2, alpha=0.6, label=f'Mean = {np.nanmean(T)-273.15:.1f} °C')
+        ax.set_title(label)
+        ax.set_xlabel('Lunar Local Time (hours)')
+        ax.set_ylabel('Temperature (°C)')
+        ax.legend(fontsize=9)
+        ax.set_xlim(0, t_hr[-1] if len(t_hr) else 708)
+        ax.grid(True, alpha=0.3)
+
+    lat = stats_undisturbed.get('lat', '?')
+    lon = stats_undisturbed.get('lon', '?')
+    fig.suptitle(f'Albedo Effect on Diurnal Surface Temperature\n'
+                 f'Lat {lat}°  Lon {lon}°', fontsize=12)
+    plt.tight_layout()
+    return fig
+
+
+def polar_diurnal(stats, depths_m=(0.0, 0.35, 1.0, 2.0), figsize=(9, 9)):
+    """Clock-face polar plot of temperature vs lunar local time at multiple depths.
+
+    The radial axis is temperature (K); the angular axis is local time
+    (0 h at top, increasing clockwise — matching a clock face).
+
+    Parameters
+    ----------
+    stats    : dict  — output of model.run() containing 'diurnal_cycle'
+    depths_m : tuple — sensor depths to overlay (in metres)
+    """
+    cycle  = stats.get('diurnal_cycle', {})
+    t_hr   = np.asarray(cycle.get('t_hours', []))
+    T_mat  = np.asarray(cycle.get('T_matrix', [[]]))
+    z_grid = np.asarray(stats.get('z_grid', []))
+
+    if t_hr.size == 0 or T_mat.size == 0:
+        fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=figsize)
+        ax.set_title('No diurnal cycle data available')
+        return fig
+
+    # Angular coordinates: 0 h → top (π/2 shift), clockwise → negate
+    theta = 2 * np.pi * t_hr / t_hr[-1]          # 0 … 2π
+    theta_plot = np.pi / 2 - theta                # clock-face: top = 0 h
+
+    colors = plt.cm.plasma(np.linspace(0.15, 0.9, len(depths_m)))
+
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=figsize)
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+
+    for depth, color in zip(depths_m, colors):
+        if z_grid.size > 0:
+            idx = int(np.argmin(np.abs(z_grid - depth)))
+            actual_depth = z_grid[idx]
+        else:
+            idx = 0
+            actual_depth = depth
+
+        if T_mat.ndim == 2 and T_mat.shape[0] > idx:
+            T = T_mat[idx]
+        else:
+            continue
+
+        # Close the loop
+        theta_c = np.append(theta, theta[0])
+        T_c     = np.append(T, T[0])
+        ax.plot(theta_c * np.pi / 180 * 0 + 2 * np.pi * np.arange(len(theta_c)) / len(theta_c),
+                T_c, lw=2, color=color, label=f'{actual_depth*100:.0f} cm')
+
+    # Replot with correct angles
+    ax.cla()
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    for depth, color in zip(depths_m, colors):
+        if z_grid.size > 0:
+            idx = int(np.argmin(np.abs(z_grid - depth)))
+            actual_depth = z_grid[idx]
+        else:
+            idx = 0; actual_depth = depth
+        if T_mat.ndim == 2 and T_mat.shape[0] > idx:
+            T = T_mat[idx]
+        else:
+            continue
+        ang = np.append(theta, theta[0])
+        T_c = np.append(T, T[0])
+        ax.plot(ang, T_c, lw=2, color=color, label=f'{actual_depth*100:.0f} cm')
+
+    hour_labels = ['0 h', '3 h', '6 h', '9 h', '12 h', '15 h', '18 h', '21 h']
+    ax.set_xticks(np.linspace(0, 2 * np.pi, 8, endpoint=False))
+    ax.set_xticklabels(hour_labels)
+    ax.set_ylabel('Temperature (K)', labelpad=40)
+    ax.legend(loc='lower right', bbox_to_anchor=(1.25, -0.05), title='Depth')
+    lat = stats.get('lat', '?'); lon = stats.get('lon', '?')
+    ax.set_title(f'Polar Diurnal Temperature\nLat {lat}°  Lon {lon}°',
+                 pad=20, fontsize=12)
+    plt.tight_layout()
+    return fig
+
+
+def borestem_correction_plot(stats, apollo_data, site_name,
+                              correction_dT, figsize=(11, 6)):
+    """Show model profile, corrected profile, and Apollo measurements.
+
+    Parameters
+    ----------
+    stats         : dict  — model.run() output with 'T_profile' key (annual mean)
+    apollo_data   : dict  — {'depths': [...], 'T_K': [...]} measured sensor data
+    site_name     : str   — 'A15' or 'A17'
+    correction_dT : array — temperature correction at each depth (K), positive = warm bias
+    """
+    z_grid  = np.asarray(stats.get('z_grid', []))
+    T_model = np.asarray(stats.get('T_mean_profile', stats.get('T_profile', [])))
+    a_d     = np.asarray(apollo_data.get('depths', []))
+    a_T     = np.asarray(apollo_data.get('T_K', []))
+    corr    = np.asarray(correction_dT)
+
+    if T_model.size == 0 or z_grid.size == 0:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.set_title('No model profile data available')
+        return fig
+
+    T_corrected = T_model - corr if corr.size == T_model.size else T_model
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.plot(T_model,     z_grid * 100, lw=2, color='#1976D2', label='Model (no correction)')
+    ax.plot(T_corrected, z_grid * 100, lw=2, color='#388E3C', ls='--',
+            label='Model (borestem corrected)')
+    if a_d.size:
+        ax.scatter(a_T, a_d * 100, s=80, color='#E53935', zorder=5,
+                   edgecolors='white', lw=0.8, label=f'Apollo {site_name} sensors')
+
+    ax.invert_yaxis()
+    ax.set_xlabel('Temperature (K)')
+    ax.set_ylabel('Depth (cm)')
+    ax.set_title(f'Borestem Thermal Correction — Apollo {site_name}')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def probe_radiation_depth_sensitivity(depths_m, delta_T_K, figsize=(9, 5)):
+    """Bar chart of probe-top radiation correction magnitude vs sensor depth.
+
+    Parameters
+    ----------
+    depths_m   : array-like — sensor depths (m)
+    delta_T_K  : array-like — correction at each depth (K, positive = warm bias)
+    """
+    depths = np.asarray(depths_m)
+    dT     = np.asarray(delta_T_K)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    bars = ax.barh(depths * 100, dT, height=4.0,
+                   color=plt.cm.Reds(np.linspace(0.4, 0.9, len(depths))),
+                   edgecolor='white', lw=0.8)
+    ax.set_xlabel('Temperature Correction ΔT (K)  [warm bias]')
+    ax.set_ylabel('Depth (cm)')
+    ax.set_title('Probe-Top Solar Radiation: Warm Bias vs Sensor Depth')
+    ax.invert_yaxis()
+    ax.axvline(0, color='#555', lw=0.8)
+    for bar, val in zip(bars, dT):
+        ax.text(val + 0.01, bar.get_y() + bar.get_height() / 2,
+                f'{val:.2f} K', va='center', fontsize=9)
+    ax.grid(True, axis='x', alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def thermal_wave_annotated(T_profile, t_arr, z_grid, lat, lon,
+                           model_name=None, figsize=(13, 6)):
+    """Heatmap of temperature field with skin-depth line and phase-lag annotations.
+
+    This is an enhanced version of heatmap() that adds:
+    - Dashed skin-depth contour line
+    - Phase-lag arrows at selected depths
+    - Amplitude decay bar on the right
+
+    Parameters
+    ----------
+    T_profile  : 2-D array (n_depth × n_time)  — temperature field in K
+    t_arr      : 1-D array  — time in hours
+    z_grid     : 1-D array  — depth in metres
+    lat, lon   : float      — site coordinates
+    model_name : str or None
+    """
+    T = np.asarray(T_profile)   # (n_z, n_t)
+    t = np.asarray(t_arr)
+    z = np.asarray(z_grid)
+
+    if T.ndim != 2 or T.shape != (z.size, t.size):
+        # Try transpose
+        if T.ndim == 2 and T.shape == (t.size, z.size):
+            T = T.T
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.set_title('Cannot render: T_profile shape mismatch')
+            return fig
+
+    fig, (ax_map, ax_amp) = plt.subplots(
+        1, 2, figsize=figsize,
+        gridspec_kw={'width_ratios': [4, 1]})
+
+    # ── Heatmap ────────────────────────────────────────────────────────────────
+    im = ax_map.pcolormesh(t, z * 100, T - 273.15,
+                           cmap='inferno', shading='auto')
+    fig.colorbar(im, ax=ax_map, label='Temperature (°C)', pad=0.02)
+    ax_map.invert_yaxis()
+    ax_map.set_xlabel('Time (hours)')
+    ax_map.set_ylabel('Depth (cm)')
+    title = f'Thermal Wave — Lat {lat}°  Lon {lon}°'
+    if model_name:
+        title += f'  [{model_name}]'
+    ax_map.set_title(title)
+
+    # ── Skin depth line ────────────────────────────────────────────────────────
+    # Estimate skin depth from amplitude decay
+    T_amp = 0.5 * (T.max(axis=1) - T.min(axis=1))   # amplitude at each depth
+    if T_amp[0] > 0:
+        skin_mask = T_amp <= T_amp[0] / np.e
+        if skin_mask.any():
+            z_skin_cm = z[skin_mask][0] * 100
+            ax_map.axhline(z_skin_cm, color='cyan', lw=1.5, ls='--',
+                           label=f'Skin depth ≈ {z_skin_cm:.1f} cm')
+            ax_map.legend(fontsize=8.5, loc='lower right')
+
+    # ── Amplitude decay panel ──────────────────────────────────────────────────
+    ax_amp.plot(T_amp, z * 100, lw=2, color='#FF6F00')
+    ax_amp.invert_yaxis()
+    ax_amp.set_xlabel('Amplitude (K)')
+    ax_amp.set_title('Amp.', fontsize=10)
+    ax_amp.grid(True, alpha=0.3)
+    ax_amp.yaxis.set_ticklabels([])
+
+    plt.tight_layout()
+    return fig
