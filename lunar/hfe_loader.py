@@ -275,12 +275,13 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
 
     Returns
     -------
-    dict  {depth_cm: {'time_h'  : ndarray  — hours within lunar day [0, 708]
-                      'T_raw'   : ndarray  — absolute temperature (K)
-                      'T_anom'  : ndarray  — T − mean(T) (K)
-                      'T_mean'  : float    — mean temperature over folded window
-                      'sensor'  : str      — sensor name
-                      'stype'   : str      — 'TG', 'TR', or 'TC'}}
+    dict  {depth_cm: {'time_h'  : ndarray        — hours within lunar day [0, 708]
+                      'T_raw'   : ndarray        — absolute temperature (K)
+                      'T_anom'  : ndarray        — T − mean(T) (K)
+                      'T_mean'  : float          — mean temperature over folded window
+                      'sensor'  : str            — sensor name
+                      'stype'   : str            — 'TG', 'TR', or 'TC'
+                      'ref_utc' : datetime (UTC) — UTC time at which t_phase_h = 0}}
     Multiple sensors at the same depth_cm are merged; the one with the most
     readings is kept.
     """
@@ -330,16 +331,22 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
 
             stype = ''.join(c for c in sensor if c.isalpha())[:2]
 
+            # UTC datetime at which t_phase_h = 0 for this sensor window
+            ref_utc = datetime.datetime.utcfromtimestamp(
+                (all_t0 + sel_start) * 86400
+            )
+
             # Keep the sensor with the most readings per depth
             if d_cm not in result or mask.sum() > result[d_cm]['_n']:
                 result[d_cm] = {
-                    'time_h': t_ph,
-                    'T_raw':  T_ph,
-                    'T_anom': T_anom,
-                    'T_mean': T_mean,
-                    'sensor': sensor,
-                    'stype':  stype,
-                    '_n':     int(mask.sum()),
+                    'time_h':  t_ph,
+                    'T_raw':   T_ph,
+                    'T_anom':  T_anom,
+                    'T_mean':  T_mean,
+                    'sensor':  sensor,
+                    'stype':   stype,
+                    'ref_utc': ref_utc,
+                    '_n':      int(mask.sum()),
                 }
 
     # Remove internal counter before returning

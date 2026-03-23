@@ -99,6 +99,22 @@ _MODEL_LINES = {
     'custom':            '-.',
 }
 
+# ── Sensor-type marker shapes (consistent across all plots) ────────────────
+# TG = gradient-bridge thermocouple → circle
+# TR = reference thermocouple        → square
+# TC = cable thermocouple            → triangle-up
+_STYPE_MARKER = {'TG': 'o', 'TR': 's', 'TC': '^'}
+_STYPE_SIZE   = {'TG': 5,   'TR': 5,   'TC': 5}
+_STYPE_LABEL  = {
+    'TG': 'TG gradient',
+    'TR': 'TR reference',
+    'TC': 'TC cable',
+}
+
+# ── Shared legend keyword defaults ─────────────────────────────────────────
+_LEG_KW = dict(framealpha=0.92, edgecolor='#cccccc', borderpad=0.5,
+               handlelength=1.8, fontsize=9)
+
 _APOLLO_SITES  = ['Apollo 15', 'Apollo 17']
 _APOLLO_COLORS = ['#1A5276', '#7D3C98']   # navy blue, purple
 
@@ -182,7 +198,7 @@ def diurnal_cycles(cycles, lat, lon, model_name=None, sunscale=None,
 
     # Legend: compact, outside right edge so it doesn't cover curves
     ax.legend(title='Depth', loc='center left', bbox_to_anchor=(1.01, 0.5),
-              framealpha=0.95, handlelength=1.8)
+              **_LEG_KW)
     ax.set_xlim(0, day_h)
     plt.tight_layout()
     return fig
@@ -196,7 +212,9 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                              site_name, lat, lon,
                              model_name='This model',
                              hayne_name='Hayne 2017',
-                             figsize=(14, 9)):
+                             max_panels=9,
+                             amp_threshold=0.05,
+                             figsize=None):
     """
     Compare Apollo HFE measured diurnal temperature variations with two model
     predictions (the user's model and the Hayne 2017 model).
@@ -216,12 +234,18 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
     lat, lon      : site coordinates
     model_name    : label for the user's model curve
     hayne_name    : label for the Hayne model curve
-    figsize       : figure size
+    max_panels    : maximum number of depth panels to show (default 9);
+                    the depths with the largest diurnal amplitude are kept
+    amp_threshold : minimum peak-to-peak anomaly amplitude (K) to include a
+                    depth panel; depths below this are silently dropped
+    figsize       : figure size; if None, computed from the panel count
 
     Returns
     -------
     matplotlib.figure.Figure
     """
+    import datetime as _dt
+    from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
     from lunar.constants import LUNAR_DAY
 
     if not probe_diurnal:
@@ -231,24 +255,35 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
 
     day_h = LUNAR_DAY / 3600.0
 
-    # ── Determine shared depths ──────────────────────────────────────────────
-    # Pick probe depths that also have model data within ±10 cm.
-    # Sort depths shallow → deep for intuitive panel ordering.
+    # ── Filter to depths with a meaningful diurnal signal ────────────────────
+    def _amp(d_cm):
+        v = probe_diurnal[d_cm]['T_anom']
+        return float(v.max() - v.min())
+
+    all_depths = sorted(probe_diurnal.keys())
+    active = [d for d in all_depths if _amp(d) >= amp_threshold]
+    # Sort by descending amplitude, keep top max_panels, then re-sort by depth
+    active = sorted(active, key=_amp, reverse=True)[:max_panels]
+    probe_depths_cm = sorted(active)
+
+    if not probe_depths_cm:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.set_title(f'No depths with amplitude ≥ {amp_threshold} K')
+        return fig
+
+    # ── Layout — size panels to be readable ──────────────────────────────────
     def _closest_model_depth(depth_m, cycles):
-        """Return the closest available model depth in cycles dict (metres)."""
         if not cycles:
             return None
         return min(cycles.keys(), key=lambda d: abs(d - depth_m))
 
-    # Use all probe depths; model will be interpolated
-    probe_depths_cm = sorted(probe_diurnal.keys())
-
-    # ── Layout ───────────────────────────────────────────────────────────────
     n = len(probe_depths_cm)
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
+    if figsize is None:
+        figsize = (5.5 * ncols, 4.0 * nrows)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
-                              sharex=True, squeeze=False)
+                              sharex=False, squeeze=False)
     axes_flat = axes.flatten()
 
     # Helper: extract zero-mean model anomaly at depth depth_m
@@ -262,9 +297,7 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
         T   = np.asarray(cycles[d_key]['temperature'], dtype=float)
         return t_h, T - float(np.mean(T))
 
-    # Marker shape by sensor type
-    _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
-    _mlbl  = {'TG': 'TG', 'TR': 'TR', 'TC': 'TC'}
+    _leg_seen = {}   # {label → handle} — deduplicated across panels for shared legend
 
     for ax_idx, d_cm in enumerate(probe_depths_cm):
         ax = axes_flat[ax_idx]
@@ -273,6 +306,13 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
         sensor = entry.get('sensor', f'{d_cm} cm')
         t_ph   = entry['time_h']
         T_anom = entry['T_anom']
+
+        # Convert phase hours to UTC datetimes if ref_utc is available
+        ref_utc = entry.get('ref_utc')
+        if ref_utc is not None:
+            t_utc_raw = [ref_utc + _dt.timedelta(hours=float(h)) for h in t_ph]
+        else:
+            t_utc_raw = list(t_ph)   # fallback: plain hours
 
         # ── Probe data ───────────────────────────────────────────────────────
         # Thin grey scatter for individual readings, bold marker for binned mean
@@ -290,43 +330,79 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                 bin_mean[b] = np.mean(vals)
                 bin_std[b]  = np.std(vals)
 
+        # Convert bin_mids to UTC datetimes if possible
+        if ref_utc is not None:
+            bin_mids_utc = [ref_utc + _dt.timedelta(hours=float(h))
+                            for h in bin_mids]
+        else:
+            bin_mids_utc = list(bin_mids)
+
         # Raw scatter (very light)
-        ax.scatter(t_ph, T_anom, s=1, alpha=0.08, color='#888888',
+        ax.scatter(t_utc_raw, T_anom, s=1, alpha=0.08, color='#888888',
                    rasterized=True, zorder=1)
         # Binned mean ± std
         good = ~np.isnan(bin_mean)
-        mk   = _mmark.get(stype, 'o')
-        ax.errorbar(bin_mids[good], bin_mean[good], yerr=bin_std[good],
-                    fmt=mk, markersize=5, color='#2C3E50',
+        mk   = _STYPE_MARKER.get(stype, 'o')
+        ms   = _STYPE_SIZE.get(stype, 5)
+        good_mids = [bin_mids_utc[i] for i in range(n_bins) if good[i]]
+        ax.errorbar(good_mids, bin_mean[good], yerr=bin_std[good],
+                    fmt=mk, markersize=ms, color='#2C3E50',
                     ecolor='#888888', elinewidth=0.8, capsize=2,
                     linewidth=1.2, zorder=4,
-                    label=f'Apollo {_mlbl[stype]}  ({sensor})')
+                    label=f'Apollo {_STYPE_LABEL.get(stype, stype)}')
 
         # ── Model 1 (user's model) ───────────────────────────────────────────
         t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
         if t1 is not None:
-            ax.plot(t1, A1, lw=2.0, color='#2471A3', zorder=5,
+            if ref_utc is not None:
+                t1_utc = [ref_utc + _dt.timedelta(hours=float(h)) for h in t1]
+            else:
+                t1_utc = list(t1)
+            ax.plot(t1_utc, A1, lw=2.0, color='#2471A3', zorder=5,
                     label=model_name)
 
         # ── Model 2 (Hayne) ──────────────────────────────────────────────────
         t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
         if t2 is not None:
-            ax.plot(t2, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
+            if ref_utc is not None:
+                t2_utc = [ref_utc + _dt.timedelta(hours=float(h)) for h in t2]
+            else:
+                t2_utc = list(t2)
+            ax.plot(t2_utc, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
                     label=hayne_name)
 
         # ── Night shading ────────────────────────────────────────────────────
         half = day_h / 2.0
-        ax.axvspan(0,          half * 0.48, color='#1a1a2e', alpha=0.07, zorder=0)
-        ax.axvspan(half * 1.52, day_h,      color='#1a1a2e', alpha=0.07, zorder=0)
+        if ref_utc is not None:
+            night_start_1 = ref_utc
+            night_end_1   = ref_utc + _dt.timedelta(hours=half * 0.48)
+            night_start_2 = ref_utc + _dt.timedelta(hours=half * 1.52)
+            night_end_2   = ref_utc + _dt.timedelta(hours=day_h)
+            ax.axvspan(night_start_1, night_end_1,
+                       color='#1a1a2e', alpha=0.07, zorder=0)
+            ax.axvspan(night_start_2, night_end_2,
+                       color='#1a1a2e', alpha=0.07, zorder=0)
+        else:
+            ax.axvspan(0,           half * 0.48, color='#1a1a2e', alpha=0.07, zorder=0)
+            ax.axvspan(half * 1.52, day_h,       color='#1a1a2e', alpha=0.07, zorder=0)
         ax.axhline(0, color='#888', lw=0.7, ls=':')
 
-        ax.set_title(f'{d_cm} cm  ({stype})', fontsize=10, weight='bold')
-        ax.set_xlim(0, day_h)
+        ax.set_title(f'{d_cm} cm  —  {sensor}', fontsize=10, weight='bold')
         if ax_idx % ncols == 0:
             ax.set_ylabel('T anomaly (K)', fontsize=9)
         if ax_idx >= (nrows - 1) * ncols:
-            ax.set_xlabel('Hours within lunar day', fontsize=9)
-        ax.legend(fontsize=7.5, framealpha=0.9, handlelength=1.6)
+            ax.set_xlabel('UTC Date' if ref_utc is not None else 'Hours within lunar day',
+                          fontsize=9)
+        if ref_utc is not None:
+            ax.xaxis_date()
+            loc = AutoDateLocator(minticks=3, maxticks=5)
+            ax.xaxis.set_major_locator(loc)
+            ax.xaxis.set_major_formatter(ConciseDateFormatter(loc))
+            plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha='right',
+                     fontsize=8)
+        for _h, _l in zip(*ax.get_legend_handles_labels()):
+            if _l not in _leg_seen:
+                _leg_seen[_l] = _h
 
     # Hide unused panels
     for ax_idx in range(n, len(axes_flat)):
@@ -334,10 +410,265 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
 
     fig.suptitle(
         f'{site_name} — Diurnal Temperature Cycle: Apollo Probe vs Models\n'
-        f'Lat {lat:.2f}°  ·  Lon {lon:.2f}°  ·  '
-        f'Points = Apollo phase-folded readings  ·  Lines = model diurnal cycles',
+        f'Lat {lat:.2f}°  ·  Lon {lon:.2f}°',
         fontsize=11, weight='bold', y=1.01,
     )
+    plt.tight_layout()
+
+    # Shared legend centred below all panels
+    if _leg_seen:
+        fig.legend(
+            list(_leg_seen.values()),
+            list(_leg_seen.keys()),
+            loc='lower center',
+            bbox_to_anchor=(0.5, 0.0),
+            ncol=min(len(_leg_seen), 5),
+            **{**_LEG_KW, 'fontsize': 9},
+        )
+        fig.subplots_adjust(bottom=0.10)
+
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1c. DIURNAL ABSOLUTE OVERLAY — single panel, T(K) vs time, Apollo + 2 models
+# ─────────────────────────────────────────────────────────────────────────────
+
+def diurnal_absolute_vs_models(probe_diurnal, cycles_model, cycles_hayne,
+                                site_name, lat, lon,
+                                depths_cm=None,
+                                model_name='This model',
+                                hayne_name='Hayne 2017',
+                                figsize=(11, 6)):
+    """
+    Single-panel absolute-temperature diurnal overlay.
+
+    Plots T (K) vs time within the lunar day for each selected depth,
+    overlaying three curves: Apollo HFE binned mean, the user's model,
+    and the Hayne 2017 model.  Apollo readings are phase-aligned to the
+    model by matching peak temperatures, removing the arbitrary phase
+    offset between the phase-folded observations and the model clock.
+
+    Parameters
+    ----------
+    probe_diurnal : dict from hfe_loader.get_probe_diurnal_cycle()
+    cycles_model  : dict from analysis.get_diurnal_cycles() — user model
+    cycles_hayne  : dict from analysis.get_diurnal_cycles() — Hayne model
+    site_name     : 'Apollo 15' or 'Apollo 17'
+    lat, lon      : site coordinates (degrees)
+    depths_cm     : list of sensor depths (cm) to plot; if None the 3
+                    shallowest sensors with a diurnal swing > 0.2 K are used
+    model_name    : label for the user's model
+    hayne_name    : label for the Hayne model
+    figsize       : figure size
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from lunar.constants import LUNAR_DAY
+
+    if not probe_diurnal:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.set_title('No probe diurnal data available')
+        return fig
+
+    day_h = LUNAR_DAY / 3600.0
+
+    # ── Choose depths ─────────────────────────────────────────────────────────
+    if depths_cm is None:
+        # Shallowest sensors with a detectable diurnal swing
+        candidates = sorted([
+            d for d, v in probe_diurnal.items()
+            if (v['T_anom'].max() - v['T_anom'].min()) > 0.2
+        ])
+        depths_cm = candidates[:3] if candidates else sorted(probe_diurnal.keys())[:3]
+
+    # Depth → colour: warm (red→orange) for shallow, cool (teal→blue) for deep
+    _palette = ['#C0392B', '#E67E22', '#27AE60', '#2471A3', '#8E44AD']
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _closest_model_depth(depth_m, cycles):
+        if not cycles:
+            return None
+        return min(cycles.keys(), key=lambda d: abs(d - depth_m))
+
+    def _binned_mean(t_ph, T_ph, n_bins=48):
+        """Return (bin_mids, bin_mean, bin_std) over one lunar day."""
+        edges = np.linspace(0, day_h, n_bins + 1)
+        mids  = 0.5 * (edges[:-1] + edges[1:])
+        idx   = np.clip(np.searchsorted(edges, t_ph, side='right') - 1, 0, n_bins - 1)
+        mean  = np.full(n_bins, np.nan)
+        std   = np.full(n_bins, np.nan)
+        for b in range(n_bins):
+            vals = T_ph[idx == b]
+            if len(vals) >= 3:
+                mean[b] = np.mean(vals)
+                std[b]  = np.std(vals)
+        return mids, mean, std
+
+    import datetime as _dt
+
+    def _phase_shift_xcorr(t_obs_bins, T_obs_mean, t_model, T_model, day_h):
+        """
+        Return phase shift (hours) to add to Apollo times to align with model.
+        Uses cross-correlation on binned data for robustness.
+        """
+        n = 120  # number of bins for cross-correlation
+        bins = np.linspace(0, day_h, n + 1)
+        mids = 0.5 * (bins[:-1] + bins[1:])
+
+        # Interpolate model onto uniform grid
+        T_mod_grid = np.interp(mids, t_model % day_h, T_model - np.mean(T_model))
+
+        # Resample Apollo binned mean onto same grid (use only good bins)
+        good = ~np.isnan(T_obs_mean)
+        if good.sum() < 4:
+            return 0.0
+        T_obs_grid = np.interp(mids, t_obs_bins[good],
+                               T_obs_mean[good] - np.nanmean(T_obs_mean[good]))
+
+        # Circular cross-correlation: find lag that maximises correlation
+        corr = np.correlate(np.tile(T_mod_grid, 2), T_obs_grid, mode='valid')[:n]
+        best_lag = int(np.argmax(corr))
+        shift = mids[best_lag]  # hours to add to Apollo times
+        # Wrap to (-day_h/2, +day_h/2)
+        shift = ((shift + day_h / 2) % day_h) - day_h / 2
+        return shift
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Determine whether any depth has ref_utc available (use first found)
+    _any_ref_utc = None
+    for _d in depths_cm:
+        if _d in probe_diurnal and probe_diurnal[_d].get('ref_utc') is not None:
+            _any_ref_utc = probe_diurnal[_d]['ref_utc']
+            break
+
+    half = day_h / 2.0
+    if _any_ref_utc is not None:
+        ax.axvspan(_any_ref_utc,
+                   _any_ref_utc + _dt.timedelta(hours=half * 0.48),
+                   color='#1a1a2e', alpha=0.08, zorder=0)
+        ax.axvspan(_any_ref_utc + _dt.timedelta(hours=half * 1.52),
+                   _any_ref_utc + _dt.timedelta(hours=day_h),
+                   color='#1a1a2e', alpha=0.08, zorder=0)
+        ax.axvline(_any_ref_utc + _dt.timedelta(hours=half),
+                   color='#888', lw=0.8, ls='--', alpha=0.6)
+        ax.text(0.52, 0.98, 'Noon',
+                transform=ax.get_xaxis_transform(),
+                fontsize=8, color='#666', va='top')
+    else:
+        ax.axvspan(0,           half * 0.48, color='#1a1a2e', alpha=0.08, zorder=0)
+        ax.axvspan(half * 1.52, day_h,       color='#1a1a2e', alpha=0.08, zorder=0)
+        ax.axvline(half, color='#888', lw=0.8, ls='--', alpha=0.6)
+        ax.text(half + day_h * 0.01, 0.98, 'Noon',
+                transform=ax.get_xaxis_transform(),
+                fontsize=8, color='#666', va='top')
+
+    legend_handles = []
+
+    for i, d_cm in enumerate(depths_cm):
+        if d_cm not in probe_diurnal:
+            continue
+        color  = _palette[i % len(_palette)]
+        depth_m = d_cm / 100.0
+
+        entry   = probe_diurnal[d_cm]
+        t_ph    = entry['time_h']
+        T_raw   = entry['T_raw']
+        ref_utc = entry.get('ref_utc')
+        stype   = entry.get('stype', 'TG')
+
+        # ── Bin Apollo data ───────────────────────────────────────────────
+        mids, bmean, bstd = _binned_mean(t_ph, T_raw)
+        good = ~np.isnan(bmean)
+
+        # ── Model at this depth ───────────────────────────────────────────
+        d_key_m = _closest_model_depth(depth_m, cycles_model)
+        t_mod   = np.asarray(cycles_model[d_key_m]['time_h'])      if cycles_model else None
+        T_mod   = np.asarray(cycles_model[d_key_m]['temperature']) if cycles_model else None
+
+        # Phase-align Apollo to model using cross-correlation
+        shift = (_phase_shift_xcorr(mids, bmean, t_mod, T_mod, day_h)
+                 if t_mod is not None else 0.0)
+        t_aligned = (mids + shift) % day_h
+        sort_idx  = np.argsort(t_aligned)
+        t_al_s    = t_aligned[sort_idx]
+        bm_s      = bmean[sort_idx]
+        bs_s      = bstd[sort_idx]
+        good_s    = ~np.isnan(bm_s)
+
+        # Convert Apollo aligned times to UTC if possible
+        if ref_utc is not None:
+            t_al_plot = [ref_utc + _dt.timedelta(hours=float(h)) for h in t_al_s]
+        else:
+            t_al_plot = list(t_al_s)
+
+        label_d = f'{d_cm} cm'
+
+        # Apollo shaded band + mean line
+        if good_s.sum() > 1:
+            t_al_good = [t_al_plot[j] for j in range(len(t_al_s)) if good_s[j]]
+            ax.fill_between(t_al_good,
+                            bm_s[good_s] - bs_s[good_s],
+                            bm_s[good_s] + bs_s[good_s],
+                            color=color, alpha=0.18, zorder=2)
+            h_apollo, = ax.plot(t_al_good, bm_s[good_s],
+                                color=color, lw=1.6, ls='-',
+                                marker=_STYPE_MARKER.get(stype, 'o'), markersize=3, zorder=3,
+                                label=f'Apollo {label_d} ({_STYPE_LABEL.get(stype, stype)})')
+            legend_handles.append(h_apollo)
+
+        # User model solid line
+        if t_mod is not None:
+            if ref_utc is not None:
+                model_ref_utc = ref_utc + _dt.timedelta(hours=float(shift))
+                t_mod_plot = [model_ref_utc + _dt.timedelta(hours=float(h))
+                              for h in t_mod]
+            else:
+                t_mod_plot = list(t_mod)
+            h_mod, = ax.plot(t_mod_plot, T_mod,
+                             color=color, lw=2.2, ls='-', zorder=5,
+                             label=f'{model_name} {label_d}')
+            legend_handles.append(h_mod)
+
+        # Hayne dashed line
+        if cycles_hayne:
+            d_key_h = _closest_model_depth(depth_m, cycles_hayne)
+            t_hay   = np.asarray(cycles_hayne[d_key_h]['time_h'])
+            T_hay   = np.asarray(cycles_hayne[d_key_h]['temperature'])
+            if ref_utc is not None:
+                t_hay_plot = [ref_utc + _dt.timedelta(hours=float(h))
+                              for h in t_hay]
+            else:
+                t_hay_plot = list(t_hay)
+            h_hay, = ax.plot(t_hay_plot, T_hay,
+                             color=color, lw=2.0, ls='--', alpha=0.75, zorder=4,
+                             label=f'{hayne_name} {label_d}')
+            legend_handles.append(h_hay)
+
+    if _any_ref_utc is not None:
+        ax.xaxis_date()
+        fig.autofmt_xdate(rotation=30, ha='right')
+        ax.set_xlabel('UTC Date')
+    else:
+        ax.set_xlabel('Time in lunar day (hours)')
+        ax.set_xlim(0, day_h)
+
+    ax.set_ylabel('Temperature (K)')
+    ax.set_title(
+        f'{site_name} — Diurnal Temperature: Apollo vs Models\n'
+        f'{lat:.3f}°N, {lon:.3f}°E  ·  solid = {model_name}  ·  '
+        f'dashed = {hayne_name}  ·  markers = Apollo HFE',
+        fontsize=11,
+    )
+
+    # Build a compact legend: group by depth
+    ax.legend(handles=legend_handles, loc='upper right',
+              ncol=len(depths_cm),
+              **{**_LEG_KW, 'fontsize': 8.5, 'handlelength': 2.0})
     plt.tight_layout()
     return fig
 
@@ -437,7 +768,6 @@ def apollo_comparison(stats, errors, site_name, model_name,
     ax1.fill_betweenx(z_grid * 100, stats['T_min'], stats['T_max'],
                       color=color, alpha=0.15, label='Diurnal range')
     _msize = {'TG': 9, 'TR': 8, 'TC': 7}
-    _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
     _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
     _mlbl  = {'TG': 'TG  (gradient bridge)', 'TR': 'TR  (reference TC)',
                'TC': 'TC  (cable, diurnal zone)'}
@@ -446,7 +776,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
         _smask = _st_arr == stype
         if _smask.any():
             ax1.plot(a_temps[_smask], a_depths[_smask] * 100,
-                     _mmark[stype], color='#1A5276',
+                     _STYPE_MARKER.get(stype, 'o'), color='#1A5276',
                      markersize=_msize[stype],
                      markeredgewidth=1.4, markeredgecolor='white',
                      alpha=_malph[stype], zorder=5, label=_mlbl[stype])
@@ -460,7 +790,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
     ax1.set_title(f'{site_name} Validation — RMSE: {errors["rmse"]:.2f} K  '
                   f'Bias: {errors["bias"]:+.2f} K  MAE: {errors["mae"]:.2f} K',
                   fontsize=13, weight='bold')
-    ax1.legend(fontsize=10, framealpha=0.95)
+    ax1.legend(**{**_LEG_KW, 'fontsize': 10})
     ax1.set_ylim(y_max_cm, 0)
 
     # ── Panel 2: Residuals lollipop chart ─────────────────────────────────────
@@ -586,7 +916,6 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         tc_mask = st_arr == 'TC'
 
         _msize = {'TG': 9, 'TR': 8, 'TC': 7}
-        _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
         _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
         _mlbl  = {
             'TG': 'TG  (gradient bridge, official)',
@@ -596,7 +925,7 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         for stype, smask in [('TG', tg_mask), ('TR', tr_mask), ('TC', tc_mask)]:
             if smask.any():
                 ax0.plot(a_temps[smask], a_depths[smask] * 100,
-                         _mmark[stype], color=dot_color,
+                         _STYPE_MARKER.get(stype, 'o'), color=dot_color,
                          markersize=_msize[stype],
                          markeredgewidth=1.2, markeredgecolor='white',
                          alpha=_malph[stype], zorder=7,
@@ -621,9 +950,8 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
         ax0.set_title(site_name, pad=6)
 
         # Legend below the axes
-        ax0.legend(fontsize=7.5, ncol=2, framealpha=0.95,
-                   loc='upper center', bbox_to_anchor=(0.5, -0.14),
-                   borderaxespad=0, edgecolor='#cccccc', handlelength=1.5)
+        ax0.legend(ncol=2, loc='upper center', bbox_to_anchor=(0.5, -0.14),
+                   borderaxespad=0, **{**_LEG_KW, 'fontsize': 7.5, 'handlelength': 1.5})
 
         # ─────────────────────────────────────────────────────────────────────
         # Row 1: residual lollipop chart
@@ -772,7 +1100,7 @@ def apollo_gradient_profile(apollo_results, model_name, k_Wpm_pK=3.5e-3,
         ax.set_xlabel('dT/dz  (K/m)', fontsize=11, weight='bold')
         ax.set_ylabel('Depth (cm)',    fontsize=11, weight='bold')
         ax.set_title(site_name, fontsize=12, weight='bold')
-        ax.legend(fontsize=8, framealpha=0.9)
+        ax.legend(**{**_LEG_KW, 'fontsize': 8})
 
     plt.tight_layout()
     return fig
@@ -850,7 +1178,7 @@ def sensor_equilibration(site_name, window_days=60, figsize=(14, 5)):
         ax.set_title(probe_label, fontsize=11, weight='bold')
         ax.set_xlabel('Days since emplacement', fontsize=10, weight='bold')
         ax.set_ylabel('Rolling median T (K)',   fontsize=10, weight='bold')
-        ax.legend(fontsize=7, framealpha=0.9, loc='upper right')
+        ax.legend(loc='upper right', **{**_LEG_KW, 'fontsize': 7})
 
     plt.tight_layout()
     return fig
@@ -888,7 +1216,7 @@ def sensitivity_heatmap(rmse_grid, sunscale_vals, chi_vals,
     ax.set_ylabel('χ (radiative conductivity param)', fontsize=11, weight='bold')
     ax.set_title(f'{site_name} — RMSE Sensitivity (sunscale × χ)',
                  fontsize=12, weight='bold')
-    ax.legend(fontsize=9, framealpha=0.9, loc='upper right')
+    ax.legend(loc='upper right', **_LEG_KW)
     plt.tight_layout()
     return fig
 
@@ -928,20 +1256,32 @@ def model_comparison(results_dict, z_grid, lat, lon,
         ax1.plot(s['T_mean'], z_grid * 100, color=c, ls=ls, lw=2.5, label=lbl)
 
     if apollo_errors:
-        # Use Apollo data from first model that has it
+        # Use Apollo data from first model that has it; split by sensor type
         for name in model_names:
             err = (apollo_errors or {}).get(name)
             if err is not None:
-                ax1.plot(err['apollo_temps'], err['apollo_depths'] * 100,
-                         'o', color='green', markersize=9,
-                         markeredgewidth=2, markeredgecolor='darkgreen',
-                         label='Apollo Measured', zorder=10)
+                st_arr = np.array(err.get('apollo_sensor_types',
+                                          ['TG'] * len(err['apollo_depths'])))
+                _msize_mc = {'TG': 9, 'TR': 8, 'TC': 7}
+                _malph_mc = {'TG': 1.0, 'TR': 0.85, 'TC': 0.60}
+                for stype in ('TC', 'TR', 'TG'):   # TC first so TG sits on top
+                    smask = st_arr == stype
+                    if smask.any():
+                        ax1.plot(err['apollo_temps'][smask],
+                                 err['apollo_depths'][smask] * 100,
+                                 _STYPE_MARKER.get(stype, 'o'),
+                                 color='#1A5276',
+                                 markersize=_msize_mc[stype],
+                                 markeredgewidth=1.5,
+                                 markeredgecolor='white',
+                                 alpha=_malph_mc[stype], zorder=10,
+                                 label=_STYPE_LABEL.get(stype, stype))
                 break
 
     ax1.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
     ax1.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
     ax1.set_title('Mean Temperature Profiles', fontsize=12, weight='bold')
-    ax1.legend(fontsize=9)
+    ax1.legend(**_LEG_KW)
     ax1.grid(True, alpha=0.3)
     ax1.invert_yaxis()
 
@@ -956,7 +1296,7 @@ def model_comparison(results_dict, z_grid, lat, lon,
     ax2.set_xlabel('Amplitude (K)', fontsize=11, weight='bold')
     ax2.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
     ax2.set_title('Diurnal Temperature Amplitude', fontsize=12, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
     ax2.grid(True, alpha=0.3)
     ax2.invert_yaxis()
 
@@ -1178,10 +1518,8 @@ def hfe_timeseries(site_name, figsize=(16, 6)):
         ax.set_xlabel('Days since emplacement', fontsize=12, weight='bold')
         ax.set_ylabel('Temperature (K)',        fontsize=12, weight='bold')
 
-        leg = ax.legend(fontsize=7.0, ncol=1,
-                        loc='upper right', framealpha=0.93,
-                        edgecolor='#cccccc',
-                        handlelength=2.0)
+        leg = ax.legend(ncol=1, loc='upper right',
+                        **{**_LEG_KW, 'fontsize': 7.0, 'handlelength': 2.0})
         for line in leg.get_lines():
             line.set_linewidth(2.0)
 
@@ -1278,7 +1616,7 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
     ax_prof.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
     ax_prof.set_title('T–Depth Profile at Time Snapshots\n'
                       '(disturbance convergence)', fontsize=11, weight='bold')
-    ax_prof.legend(fontsize=9)
+    ax_prof.legend(**_LEG_KW)
     ax_prof.grid(True, alpha=0.3)
 
     # ── Right: ΔT between bridge A and B sensors over time ───────────────────
@@ -1320,7 +1658,7 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
     ax_grad.set_ylabel('ΔT  (T_A − T_B)  [K]', fontsize=11, weight='bold')
     ax_grad.set_title('Gradient-Bridge ΔT Over Time\n'
                       '(thermal shunting signature)', fontsize=11, weight='bold')
-    ax_grad.legend(fontsize=8)
+    ax_grad.legend(**{**_LEG_KW, 'fontsize': 8})
     ax_grad.grid(True, alpha=0.3)
 
     fig.suptitle(f'{site_name} — HFE Thermal Disturbance & Shunting Evidence',
@@ -1376,7 +1714,7 @@ def dem_overview(elev_m, map_res, target_lat, target_lon,
     ax1.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
     ax1.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
     ax1.set_title('Global DEM — LOLA (LRO)', fontsize=12, weight='bold')
-    ax1.legend(fontsize=9)
+    ax1.legend(**_LEG_KW)
     ax1.set_aspect('equal')
 
     # ── Right: Zoomed local DEM ────────────────────────────────────────────────
@@ -1408,7 +1746,7 @@ def dem_overview(elev_m, map_res, target_lat, target_lon,
     ax2.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
     ax2.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
     ax2.set_title(f'Local Terrain  (±{window_deg}°)', fontsize=12, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
     ax2.set_aspect('equal')
 
     plt.suptitle('Digital Elevation Model', fontsize=14, weight='bold')
@@ -1467,7 +1805,7 @@ def horizon_polar(horizons, az_angles, svf, lat, lon, figsize=(8, 8)):
         f'Sky-View Factor: {svf:.3f}  '
         f'(1.0 = completely open)',
         fontsize=12, weight='bold', pad=20)
-    ax.legend(fontsize=9, loc='upper right', bbox_to_anchor=(1.25, 1.15))
+    ax.legend(loc='upper right', bbox_to_anchor=(1.25, 1.15), **_LEG_KW)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -1546,7 +1884,7 @@ def illumination_timeline(lat_deg, lon_deg, slope, aspect,
     ax1.set_ylabel('Solar Elevation (°)', fontsize=11, weight='bold')
     ax1.set_title('Solar Illumination Analysis  —  one full lunar day',
                   fontsize=13, weight='bold')
-    ax1.legend(fontsize=9, loc='upper right', framealpha=0.9)
+    ax1.legend(loc='upper right', **_LEG_KW)
     ax1.grid(True, alpha=0.3)
 
     # ── Panel 2: Absorbed flux ─────────────────────────────────────────────────
@@ -1555,7 +1893,7 @@ def illumination_timeline(lat_deg, lon_deg, slope, aspect,
     ax2.plot(t_hours, sol_flux, color='#C0392B', lw=1.5, label='Absorbed solar flux')
     ax2.set_ylabel('Absorbed Flux (W/m²)', fontsize=11, weight='bold')
     ax2.set_title('Absorbed Solar Energy', fontsize=12, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
     ax2.grid(True, alpha=0.3)
 
     peak_idx = int(np.argmax(sol_flux))
@@ -1578,7 +1916,7 @@ def illumination_timeline(lat_deg, lon_deg, slope, aspect,
     ax3.set_ylabel('Illumination (%)', fontsize=11, weight='bold')
     ax3.set_title('Cumulative Illumination Fraction', fontsize=12, weight='bold')
     ax3.set_ylim(0, 105)
-    ax3.legend(fontsize=9)
+    ax3.legend(**_LEG_KW)
     ax3.grid(True, alpha=0.3)
 
     plt.suptitle(f'{lat_deg:.3f}°N, {lon_deg:.3f}°E  |  '
@@ -1650,7 +1988,7 @@ def density_profile(z_grid, model_name, rho_surface=1100.0, h_param=0.07,
         f'Surface density: {rho_surface:.0f} kg/m³  |  '
         f'Layer thickness: {h_param * 100:.0f} cm',
         fontsize=12, weight='bold')
-    ax.legend(fontsize=9)
+    ax.legend(**_LEG_KW)
     ax.grid(True, alpha=0.3)
     ax.invert_yaxis()
     ax.set_xlim(left=0)
@@ -1744,7 +2082,7 @@ def surface_temperature_map(elev_m, map_res, target_lat, target_lon,
     ax2.set_ylabel('Latitude (°N)', fontsize=10, weight='bold')
     ax2.set_title('Estimated Peak Temperature\n(noon, flat terrain)',
                   fontsize=11, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
 
     # ── Panel 3: Day-night temperature swing ───────────────────────────────────
     ax3 = axes[2]
@@ -1810,10 +2148,22 @@ def sensitivity_sweep(sens_results, param_name, z_grid, lat, lon,
     if has_apollo:
         for r in sens_results:
             if r['errors']:
-                err = r['errors']
-                ax1.plot(err['apollo_temps'], err['apollo_depths'] * 100,
-                         'ro', markersize=8, markeredgewidth=2,
-                         markeredgecolor='darkred', label='Apollo', zorder=10)
+                err    = r['errors']
+                st_arr = np.array(err.get('apollo_sensor_types',
+                                          ['TG'] * len(err['apollo_depths'])))
+                _msize_ss = {'TG': 8, 'TR': 7, 'TC': 6}
+                for stype in ('TC', 'TR', 'TG'):
+                    smask = st_arr == stype
+                    if smask.any():
+                        ax1.plot(err['apollo_temps'][smask],
+                                 err['apollo_depths'][smask] * 100,
+                                 _STYPE_MARKER.get(stype, 'o'),
+                                 color='#C0392B',
+                                 markersize=_msize_ss[stype],
+                                 markeredgewidth=1.5,
+                                 markeredgecolor='white',
+                                 zorder=10,
+                                 label=_STYPE_LABEL.get(stype, stype))
                 break
     ax1.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
     ax1.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
@@ -1830,14 +2180,14 @@ def sensitivity_sweep(sens_results, param_name, z_grid, lat, lon,
     T_min  = [r['stats']['T_min'][0]  for r in sens_results]
     T_max  = [r['stats']['T_max'][0]  for r in sens_results]
     T_mean = [r['stats']['T_mean'][0] for r in sens_results]
-    ax2.fill_between(values, T_min, T_max, alpha=0.25, color='orange')
-    ax2.plot(values, T_max,  'r-o', lw=2, ms=7, label='Maximum')
-    ax2.plot(values, T_mean, 'k-s', lw=2, ms=7, label='Mean')
-    ax2.plot(values, T_min,  'b-o', lw=2, ms=7, label='Minimum')
+    ax2.fill_between(values, T_min, T_max, alpha=0.25, color='#F39C12')
+    ax2.plot(values, T_max,  '-o', color='#E74C3C', lw=2, ms=7, label='Maximum')
+    ax2.plot(values, T_mean, '-s', color='#5D6D7E', lw=2, ms=7, label='Mean')
+    ax2.plot(values, T_min,  '-o', color='#2471A3', lw=2, ms=7, label='Minimum')
     ax2.set_xlabel(param_name, fontsize=11, weight='bold')
     ax2.set_ylabel('Surface Temperature (K)', fontsize=11, weight='bold')
     ax2.set_title('Surface Temperature Response', fontsize=12, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
     ax2.grid(True, alpha=0.3)
 
     # ── Panel 3: RMSE / bias vs parameter (or placeholder) ────────────────────
@@ -1847,21 +2197,22 @@ def sensitivity_sweep(sens_results, param_name, z_grid, lat, lon,
         bias_v = [r['errors']['bias'] for r in sens_results if r['errors']]
         v_ap   = [r['value']          for r in sens_results if r['errors']]
         ax3b   = ax3.twinx()
-        l1,    = ax3.plot(v_ap, rmse_v, 'ro-', lw=2, ms=7, label='RMSE')
-        l2,    = ax3b.plot(v_ap, bias_v, 'bs-', lw=2, ms=7, label='Bias')
+        _RC = '#E74C3C'; _BC = '#2471A3'; _OC = '#27AE60'
+        l1,    = ax3.plot(v_ap, rmse_v, '-o', color=_RC, lw=2, ms=7, label='RMSE')
+        l2,    = ax3b.plot(v_ap, bias_v, '-s', color=_BC, lw=2, ms=7, label='Bias')
         # Optimal value
         best_i = int(np.argmin(rmse_v))
-        ax3.axvline(v_ap[best_i], color='green', ls='--', lw=2, alpha=0.7)
+        ax3.axvline(v_ap[best_i], color=_OC, ls='--', lw=2, alpha=0.7)
         ax3.text(v_ap[best_i], max(rmse_v) * 0.97,
                  f'  Opt={v_ap[best_i]:.3g}',
-                 fontsize=9, color='green', weight='bold', va='top')
+                 fontsize=9, color=_OC, weight='bold', va='top')
         ax3.set_xlabel(param_name, fontsize=11, weight='bold')
-        ax3.set_ylabel('RMSE (K)', fontsize=11, weight='bold', color='red')
-        ax3b.set_ylabel('Bias (K)', fontsize=11, weight='bold', color='blue')
-        ax3.tick_params(axis='y', labelcolor='red')
-        ax3b.tick_params(axis='y', labelcolor='blue')
+        ax3.set_ylabel('RMSE (K)', fontsize=11, weight='bold', color=_RC)
+        ax3b.set_ylabel('Bias (K)', fontsize=11, weight='bold', color=_BC)
+        ax3.tick_params(axis='y', labelcolor=_RC)
+        ax3b.tick_params(axis='y', labelcolor=_BC)
         ax3.set_title('Accuracy vs Parameter', fontsize=12, weight='bold')
-        ax3.legend([l1, l2], ['RMSE', 'Bias'], fontsize=9)
+        ax3.legend([l1, l2], ['RMSE', 'Bias'], **_LEG_KW)
         ax3.grid(True, alpha=0.3)
     else:
         ax3.text(0.5, 0.5, 'No Apollo data\nfor validation',
@@ -1874,8 +2225,8 @@ def sensitivity_sweep(sens_results, param_name, z_grid, lat, lon,
     ax4 = fig.add_subplot(gs[1, 0])
     T_1m = [float(np.interp(1.0, z_grid, r['stats']['T_mean']))
             for r in sens_results]
-    ax4.plot(values, T_1m, 'go-', lw=2.5, ms=9, mew=2, mec='darkgreen')
-    ax4.fill_between(values, T_1m, alpha=0.2, color='green')
+    ax4.plot(values, T_1m, '-o', color='#27AE60', lw=2.5, ms=9, mew=2, mec='#1A7A46')
+    ax4.fill_between(values, min(T_1m), T_1m, alpha=0.2, color='#27AE60')
     ax4.set_xlabel(param_name, fontsize=11, weight='bold')
     ax4.set_ylabel('Temperature at 1 m (K)', fontsize=11, weight='bold')
     ax4.set_title('Deep Temperature Sensitivity', fontsize=12, weight='bold')
@@ -1884,8 +2235,8 @@ def sensitivity_sweep(sens_results, param_name, z_grid, lat, lon,
     # ── Panel 5: Surface amplitude ─────────────────────────────────────────────
     ax5 = fig.add_subplot(gs[1, 1])
     amp  = [r['stats']['T_amplitude'][0] for r in sens_results]
-    ax5.plot(values, amp, 'mo-', lw=2.5, ms=9, mew=2, mec='darkmagenta')
-    ax5.fill_between(values, amp, alpha=0.2, color='magenta')
+    ax5.plot(values, amp, '-o', color='#8E44AD', lw=2.5, ms=9, mew=2, mec='#6C3483')
+    ax5.fill_between(values, min(amp), amp, alpha=0.2, color='#8E44AD')
     ax5.set_xlabel(param_name, fontsize=11, weight='bold')
     ax5.set_ylabel('Diurnal Amplitude (K)', fontsize=11, weight='bold')
     ax5.set_title('Surface Amplitude Sensitivity', fontsize=12, weight='bold')
@@ -1964,20 +2315,20 @@ def batch_summary(batch_results, z_grid, figsize=(15, 10)):
     ax1.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
     ax1.set_ylabel('Surface Temperature (K)', fontsize=11, weight='bold')
     ax1.set_title('Surface Temperature Range', fontsize=12, weight='bold')
-    ax1.legend(fontsize=9)
+    ax1.legend(**_LEG_KW)
     ax1.grid(True, alpha=0.3, axis='y')
 
     # ── Panel 2: Temperature at 0 and 50 cm ───────────────────────────────────
     ax2 = fig.add_subplot(gs[0, 1])
     T_50cm = [float(np.interp(0.5, z_grid, r['stats']['T_mean']))
               for r in batch_results]
-    ax2.plot(xs, T_mean_surf, 'ro-', lw=2, ms=7, label='Surface (0 cm)')
-    ax2.plot(xs, T_50cm, 'bs-', lw=2, ms=7, label='Depth 50 cm')
+    ax2.plot(xs, T_mean_surf, '-o', color='#E74C3C', lw=2, ms=7, label='Surface (0 cm)')
+    ax2.plot(xs, T_50cm, '-s', color='#2471A3', lw=2, ms=7, label='Depth 50 cm')
     ax2.set_xticks(xs)
     ax2.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
     ax2.set_ylabel('Mean Temperature (K)', fontsize=11, weight='bold')
     ax2.set_title('Mean Temperature at Key Depths', fontsize=12, weight='bold')
-    ax2.legend(fontsize=9)
+    ax2.legend(**_LEG_KW)
     ax2.grid(True, alpha=0.3)
 
     # ── Panel 3: RMSE where Apollo data exists ─────────────────────────────────
@@ -1997,7 +2348,7 @@ def batch_summary(batch_results, z_grid, figsize=(15, 10)):
         ax3.set_xticklabels(apollo_names, rotation=45, ha='right', fontsize=8)
         ax3.set_ylabel('Error (K)', fontsize=11, weight='bold')
         ax3.set_title('Apollo Validation Errors', fontsize=12, weight='bold')
-        ax3.legend(fontsize=9)
+        ax3.legend(**_LEG_KW)
         ax3.grid(True, alpha=0.3, axis='y')
     else:
         ax3.text(0.5, 0.5, 'No Apollo sites\nin batch', ha='center', va='center',
@@ -2015,7 +2366,7 @@ def batch_summary(batch_results, z_grid, figsize=(15, 10)):
     ax4.set_xlabel('Mean Temperature (K)', fontsize=11, weight='bold')
     ax4.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
     ax4.set_title('All Mean Temperature Profiles', fontsize=12, weight='bold')
-    ax4.legend(fontsize=8, ncol=max(1, n // 5), loc='best')
+    ax4.legend(ncol=max(1, n // 5), loc='best', **{**_LEG_KW, 'fontsize': 8})
     ax4.grid(True, alpha=0.3)
     ax4.invert_yaxis()
 
@@ -2122,7 +2473,7 @@ def heat_flux_profile(apollo_results, model_name,
         ax.set_xlabel('Heat Flux  Q  (mW/m²)')
         ax.set_ylabel('Depth (cm)')
         ax.set_title(site_name)
-        ax.legend(fontsize=8, framealpha=0.95, loc='lower right')
+        ax.legend(loc='lower right', **{**_LEG_KW, 'fontsize': 8})
 
     plt.tight_layout()
     return fig
@@ -2197,7 +2548,7 @@ def amplitude_decay(stats, z_grid, lat, lon, model_name=None, figsize=(10, 6)):
     ax_main.set_xlabel('Amplitude  A(z)  (K)')
     ax_main.set_ylabel('Depth (cm)')
     ax_main.set_title('Linear scale')
-    ax_main.legend(fontsize=8.5, framealpha=0.95)
+    ax_main.legend(**{**_LEG_KW, 'fontsize': 8.5})
     ax_main.set_xlim(left=0)
 
     # ── Right: log scale — straight line if truly exponential ────────────────
@@ -2216,7 +2567,7 @@ def amplitude_decay(stats, z_grid, lat, lon, model_name=None, figsize=(10, 6)):
     ax_log.set_xlabel('Amplitude  A(z)  (K, log scale)')
     ax_log.set_ylabel('Depth (cm)')
     ax_log.set_title('Log scale  (straight = exponential decay)')
-    ax_log.legend(fontsize=8.5, framealpha=0.95)
+    ax_log.legend(**{**_LEG_KW, 'fontsize': 8.5})
     ax_log.yaxis.set_minor_locator(mticker.AutoMinorLocator())
 
     plt.tight_layout()
@@ -2306,7 +2657,7 @@ def combined_heat_flow(apollo_results, model_name,
     ax_bar.set_xticklabels(sites, fontsize=10)
     ax_bar.set_ylabel('Heat Flux  (mW/m²)')
     ax_bar.set_title('Modelled vs Measured\nGeothermal Heat Flow')
-    ax_bar.legend(fontsize=8.5, framealpha=0.95)
+    ax_bar.legend(**{**_LEG_KW, 'fontsize': 8.5})
     ax_bar.set_ylim(bottom=0)
     ax_bar.axhline(0, color='black', lw=0.6)
 
@@ -2340,7 +2691,7 @@ def combined_heat_flow(apollo_results, model_name,
     ax_grad.set_xlabel('Temperature Gradient  dT/dz  (mK/m)')
     ax_grad.set_ylabel('Depth (cm)')
     ax_grad.set_title('Geothermal Gradient Profile\n(solid = model, circles = measured)')
-    ax_grad.legend(fontsize=8.5, framealpha=0.95, ncol=2)
+    ax_grad.legend(ncol=2, **{**_LEG_KW, 'fontsize': 8.5})
 
     fig.suptitle(
         f'Lunar Geothermal Heat Flow — {label}\n'
@@ -2423,7 +2774,7 @@ def albedo_comparison(stats_und, cycles_und, stats_dis, cycles_dis,
         ax.set_title(panel_title, fontsize=12, weight='bold')
         ax.set_xlabel('Time in lunar day (hours)', fontsize=11, weight='bold')
         ax.set_xlim(0, day_h)
-        ax.legend(fontsize=9, framealpha=0.95, loc='upper right')
+        ax.legend(loc='upper right', **_LEG_KW)
 
     axes[0].set_ylabel('Temperature (K)', fontsize=11, weight='bold')
 
@@ -2499,9 +2850,9 @@ def polar_diurnal(cycles, depths_m=(0.0, 0.35, 1.0, 2.0),
     ax.set_xticklabels(tick_labels, fontsize=9)
     ax.tick_params(axis='y', labelsize=9)
     ax.set_ylabel('Temperature (K)', labelpad=45, fontsize=10, weight='bold')
-    ax.legend(title='Depth', fontsize=9, title_fontsize=9,
+    ax.legend(title='Depth', title_fontsize=9,
               loc='lower right', bbox_to_anchor=(1.30, -0.05),
-              framealpha=0.95)
+              **_LEG_KW)
 
     lat_str = f'{lat:.3f}' if lat is not None else '?'
     lon_str = f'{lon:.3f}' if lon is not None else '?'
@@ -2557,7 +2908,6 @@ def borestem_correction_plot(stats, apollo_data, site_name,
              label='Model (borestem corrected)', zorder=4)
     if a_d.size:
         _msize = {'TG': 9, 'TR': 8, 'TC': 7}
-        _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
         _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
         _mlbl  = {'TG': 'TG  (gradient bridge)', 'TR': 'TR  (reference TC)',
                    'TC': 'TC  (cable, diurnal zone)'}
@@ -2566,7 +2916,7 @@ def borestem_correction_plot(stats, apollo_data, site_name,
             smask = st_arr == stype
             if smask.any():
                 ax1.plot(a_T[smask], a_d[smask] * 100,
-                         _mmark[stype], color=site_color,
+                         _STYPE_MARKER.get(stype, 'o'), color=site_color,
                          markersize=_msize[stype],
                          markeredgewidth=1.2, markeredgecolor='white',
                          alpha=_malph[stype], zorder=5,
@@ -2578,7 +2928,7 @@ def borestem_correction_plot(stats, apollo_data, site_name,
     ax1.set_title(f'Apollo {site_name} — Mean Temperature Profile\n'
                   f'Borestem Thermal Correction',
                   fontsize=12, weight='bold')
-    ax1.legend(fontsize=9, framealpha=0.95)
+    ax1.legend(**_LEG_KW)
 
     # ── Panel 2: correction magnitude ΔT(z) ──────────────────────────────────
     if corr.size == z_grid.size:
@@ -2675,7 +3025,7 @@ def borestem_2d_field_plot(T_2d, r_grid, z_grid, T_mean, dT_bs,
     ax_map.invert_yaxis()
     ax_map.set_xlabel('Radius  r  (cm)', fontsize=11, weight='bold')
     ax_map.set_ylabel('Depth   z  (cm)', fontsize=11, weight='bold')
-    ax_map.legend(fontsize=8, framealpha=0.95, loc='lower right')
+    ax_map.legend(loc='lower right', **{**_LEG_KW, 'fontsize': 8})
 
     lat_str = f'{lat:.3f}' if lat is not None else '?'
     lon_str = f'{lon:.3f}' if lon is not None else '?'
@@ -2830,7 +3180,7 @@ def thermal_wave_annotated(T_profile, t_arr, z_grid, lat, lon,
             z_skin_cm = float(z_cm[below_inv_e[0]])
             ax_map.axhline(z_skin_cm, color='cyan', lw=1.8, ls='--',
                            label=f'Skin depth  δ ≈ {z_skin_cm:.1f} cm')
-            ax_map.legend(fontsize=9, framealpha=0.92, loc='lower right')
+            ax_map.legend(loc='lower right', **_LEG_KW)
 
     ax_map.invert_yaxis()
     ax_map.set_xlabel('Time in lunar day (hours)', fontsize=11, weight='bold')
@@ -2853,7 +3203,7 @@ def thermal_wave_annotated(T_profile, t_arr, z_grid, lat, lon,
         ax_amp.plot(z_fit, _exp(z_fit, *popt), lw=1.4, ls='--',
                     color='#C0392B', alpha=0.80,
                     label=f'Fit  δ = {popt[1]:.1f} cm')
-        ax_amp.legend(fontsize=8, framealpha=0.92)
+        ax_amp.legend(**{**_LEG_KW, 'fontsize': 8})
     except Exception:
         pass
 
