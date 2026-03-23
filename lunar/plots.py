@@ -12,40 +12,75 @@ section of the notebook uses a consistent visual style.
 
 Public functions
 ----------------
-diurnal_cycles()         — Temperature vs time at multiple depths.
-heatmap()                — 2-D temperature field (depth × time).
-apollo_comparison()      — Model profile vs single Apollo HFE site.
-dual_apollo_comparison() — Both Apollo 15 & 17 side-by-side.
-model_comparison()       — Two or more models side-by-side.
-sensitivity_sweep()   — Parameter sensitivity: 6-panel summary.
-batch_summary()       — Grid of bar/line plots for batch results.
+diurnal_cycles()           — Temperature vs time at multiple depths.
+heatmap()                  — 2-D temperature field (depth × time).
+apollo_comparison()        — Model profile vs single Apollo HFE site.
+dual_apollo_comparison()   — Both Apollo 15 & 17 side-by-side.
+model_comparison()         — Two or more models side-by-side.
+sensitivity_sweep()        — Parameter sensitivity: 6-panel summary.
+batch_summary()            — Grid of bar/line plots for batch results.
+heat_flux_profile()        — Geothermal heat flux Q(z) = k·dT/dz.
+amplitude_decay()          — Diurnal amplitude vs depth + skin-depth fit.
+combined_heat_flow()       — A15 vs A17 heat-flow bar chart summary.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.ticker as mticker
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 
 # ── Shared style — publication quality ───────────────────────────────────────
 import matplotlib as _mpl
-plt.style.use('seaborn-v0_8-whitegrid')
+
+# Use a clean base that renders well in both notebooks and PDFs
+plt.style.use('default')
 _mpl.rcParams.update({
-    'font.family':        'sans-serif',
-    'font.size':          11,
-    'axes.titlesize':     13,
-    'axes.labelsize':     12,
-    'xtick.labelsize':    10,
-    'ytick.labelsize':    10,
-    'legend.fontsize':    10,
-    'legend.framealpha':  0.9,
-    'figure.dpi':         130,
-    'axes.spines.top':    False,
-    'axes.spines.right':  False,
-    'axes.edgecolor':     '#444444',
-    'axes.linewidth':     0.8,
-    'grid.color':         '#dddddd',
-    'grid.linewidth':     0.6,
+    # ── Fonts ──────────────────────────────────────────────────────────────
+    'font.family':          'DejaVu Sans',
+    'font.size':            11,
+    'axes.titlesize':       12,
+    'axes.titleweight':     'bold',
+    'axes.labelsize':       11,
+    'axes.labelweight':     'bold',
+    'xtick.labelsize':      10,
+    'ytick.labelsize':      10,
+    'legend.fontsize':      9,
+    'legend.title_fontsize': 9,
+    # ── Axes ───────────────────────────────────────────────────────────────
+    'axes.facecolor':       'white',
+    'axes.edgecolor':       '#2f2f2f',
+    'axes.linewidth':       0.9,
+    'axes.spines.top':      False,
+    'axes.spines.right':    False,
+    'axes.grid':            True,
+    'grid.color':           '#e0e0e0',
+    'grid.linewidth':       0.6,
+    'grid.linestyle':       '-',
+    # ── Figure ─────────────────────────────────────────────────────────────
+    'figure.facecolor':     'white',
+    'figure.dpi':           130,
+    'figure.constrained_layout.use': False,   # we call tight_layout manually
+    # ── Lines & markers ────────────────────────────────────────────────────
+    'lines.linewidth':      2.0,
+    'lines.solid_capstyle': 'round',
+    # ── Legend ─────────────────────────────────────────────────────────────
+    'legend.framealpha':    0.92,
+    'legend.edgecolor':     '#cccccc',
+    'legend.borderpad':     0.5,
+    # ── Colour cycle — ColorBrewer Set1 (distinguishable at B&W too) ───────
+    'axes.prop_cycle': _mpl.cycler(color=[
+        '#E41A1C', '#377EB8', '#4DAF4A', '#984EA3',
+        '#FF7F00', '#A65628', '#F781BF', '#999999',
+    ]),
+    # ── Ticks ──────────────────────────────────────────────────────────────
+    'xtick.direction':      'out',
+    'ytick.direction':      'out',
+    'xtick.major.size':     4,
+    'ytick.major.size':     4,
+    'xtick.minor.size':     2,
+    'ytick.minor.size':     2,
 })
 
 _MODEL_COLORS = {
@@ -91,7 +126,7 @@ def _subtitle(lat, lon, model_name=None, extra=''):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def diurnal_cycles(cycles, lat, lon, model_name=None, sunscale=None,
-                   figsize=(13, 7)):
+                   figsize=(11, 6)):
     """
     Plot temperature vs time (hours) at several depths for the final lunar day.
 
@@ -107,26 +142,48 @@ def diurnal_cycles(cycles, lat, lon, model_name=None, sunscale=None,
     -------
     matplotlib.figure.Figure
     """
-    depth_colors = ['#E74C3C', '#E67E22', '#2980B9', '#8E44AD',
-                    '#27AE60', '#16A085', '#D35400', '#C0392B']
+    from lunar.constants import LUNAR_DAY
+
+    # ColorBrewer-inspired sequential palette: surface = warm, deep = cool
+    depth_colors = [
+        '#D73027', '#FC8D59', '#FEE090',   # warm: surface/shallow
+        '#ABD9E9', '#74ADD1', '#4575B4', '#313695', '#1A1A6C',  # cool: deep
+    ]
+
+    sorted_cycles = sorted(cycles.items())
+    day_h = LUNAR_DAY / 3600.0
+    half  = day_h / 2.0
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    for i, (depth, data) in enumerate(sorted(cycles.items())):
+    # Night shading (approximate: first/last quarter of day)
+    ax.axvspan(0,    half * 0.48, color='#1a1a2e', alpha=0.08, zorder=0, label='_night')
+    ax.axvspan(half * 1.52, day_h, color='#1a1a2e', alpha=0.08, zorder=0, label='_night')
+    ax.axvline(half, color='#888', lw=0.8, ls='--', alpha=0.6, zorder=1)
+    ax.text(half + day_h * 0.01, ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 400,
+            'Noon', fontsize=8, color='#666', va='top', ha='left')
+
+    for i, (depth, data) in enumerate(sorted_cycles):
         color = depth_colors[i % len(depth_colors)]
+        d_cm  = depth * 100
+        # Thicker line for surface; thinner for deep
+        lw   = 2.5 if d_cm < 1 else max(1.2, 2.5 - i * 0.2)
+        zord = 10 - i
         ax.plot(data['time_h'], data['temperature'],
-                color=color, linewidth=2.5,
-                label=f"{depth * 100:.0f} cm depth")
+                color=color, linewidth=lw, zorder=zord,
+                label=f'{d_cm:.0f} cm' if d_cm >= 1 else 'Surface (0 cm)')
 
-    ax.set_xlabel('Time in lunar day (hours)', fontsize=13, weight='bold')
-    ax.set_ylabel('Temperature (K)', fontsize=13, weight='bold')
+    ax.set_xlabel('Time in lunar day (hours)')
+    ax.set_ylabel('Temperature (K)')
 
-    extra = f'SUNSCALE={sunscale:.2f}' if sunscale is not None else ''
-    ax.set_title('Diurnal Temperature Cycles\n' + _subtitle(lat, lon, model_name, extra),
-                 fontsize=14, weight='bold', pad=12)
+    extra = f'  ·  SUNSCALE = {sunscale:.2f}' if sunscale is not None else ''
+    ax.set_title(
+        f'Diurnal Temperature Cycles — {_subtitle(lat, lon, model_name)}{extra}')
 
-    ax.legend(fontsize=11, loc='best', framealpha=0.9)
-    ax.tick_params(labelsize=11)
+    # Legend: compact, outside right edge so it doesn't cover curves
+    ax.legend(title='Depth', loc='center left', bbox_to_anchor=(1.01, 0.5),
+              framealpha=0.95, handlelength=1.8)
+    ax.set_xlim(0, day_h)
     plt.tight_layout()
     return fig
 
@@ -136,16 +193,16 @@ def diurnal_cycles(cycles, lat, lon, model_name=None, sunscale=None,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def heatmap(T_profile, t_arr, z_grid, lat, lon, model_name=None,
-            depth_limit=1.5, colormap='hot', show_contours=True,
-            figsize=(13, 7)):
+            depth_limit=1.5, colormap='inferno', show_contours=True,
+            figsize=(12, 6)):
     """
-    2-D filled-contour plot of temperature as a function of depth and time.
+    2-D temperature field as a function of depth and time.
 
     Parameters
     ----------
     depth_limit  : only show the top *depth_limit* metres
-    colormap     : matplotlib colormap name
-    show_contours: overlay contour lines
+    colormap     : matplotlib colormap name ('inferno' is standard for T)
+    show_contours: overlay iso-temperature contour lines
     """
     from lunar.constants import LUNAR_DAY
 
@@ -159,26 +216,31 @@ def heatmap(T_profile, t_arr, z_grid, lat, lon, model_name=None,
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    im = ax.contourf(t_hours, z_cm, T_sub.T,
-                     levels=50, cmap=colormap,
-                     vmin=np.min(T_sub), vmax=np.max(T_sub))
+    # pcolormesh renders crisper than contourf and avoids level-quantisation
+    pm = ax.pcolormesh(t_hours, z_cm, T_sub.T,
+                       cmap=colormap, shading='gouraud',
+                       vmin=np.nanmin(T_sub), vmax=np.nanmax(T_sub))
 
     if show_contours:
-        cs = ax.contour(t_hours, z_cm, T_sub.T,
-                        levels=10, colors='black',
-                        linewidths=0.5, alpha=0.3)
-        ax.clabel(cs, inline=True, fontsize=8, fmt='%.0f K')
+        # Coarser grid for contours (avoid clutter)
+        n_t, n_z = len(t_hours), len(z_cm)
+        step_t = max(1, n_t // 200)
+        step_z = max(1, n_z // 80)
+        cs = ax.contour(t_hours[::step_t], z_cm[::step_z],
+                        T_sub[::step_t, ::step_z].T,
+                        levels=8, colors='white',
+                        linewidths=0.6, alpha=0.45)
+        ax.clabel(cs, inline=True, fontsize=7.5, fmt='%d K', use_clabeltext=True)
 
-    cbar = plt.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_label('Temperature (K)', fontsize=12, weight='bold')
+    cbar = plt.colorbar(pm, ax=ax, pad=0.02, fraction=0.04)
+    cbar.set_label('Temperature (K)')
+    cbar.ax.tick_params(labelsize=9)
 
-    ax.set_xlabel('Time in lunar day (hours)', fontsize=13, weight='bold')
-    ax.set_ylabel('Depth (cm)', fontsize=13, weight='bold')
-    ax.set_title('Temperature Evolution — Depth × Time\n' +
-                 _subtitle(lat, lon, model_name),
-                 fontsize=14, weight='bold', pad=12)
+    ax.set_xlabel('Time in lunar day (hours)')
+    ax.set_ylabel('Depth (cm)')
+    ax.set_title(f'Subsurface Temperature — Depth × Time\n{_subtitle(lat, lon, model_name)}')
     ax.invert_yaxis()
-    ax.tick_params(labelsize=11)
+    ax.set_xlim(t_hours[0], t_hours[-1])
     plt.tight_layout()
     return fig
 
@@ -282,7 +344,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
-                           figsize=(16, 10)):
+                           figsize=(15, 11)):
     """
     Show both Apollo 15 and Apollo 17 validation side-by-side in one figure.
 
@@ -304,8 +366,12 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
     color, ls, label = _model_style(model_name)
 
     fig = plt.figure(figsize=figsize)
-    gs  = gridspec.GridSpec(2, 2, height_ratios=[2.8, 1.0],
-                            hspace=0.72, wspace=0.38)
+    # 3 rows: profile | residuals | stats bar
+    gs = gridspec.GridSpec(
+        3, 2,
+        height_ratios=[3.2, 1.6, 0.9],
+        hspace=0.55, wspace=0.42,
+    )
 
     for col, site_name in enumerate(sites):
         if site_name not in apollo_results:
@@ -320,144 +386,156 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
 
         # ── Depth axis: zoom to include shallowest sensor at top ─────────────
         max_meas_cm = float(np.max(a_depths * 100))
-        min_meas_cm = float(np.min(a_depths * 100))
-        y_max_cm    = min(320.0, max(150.0, max_meas_cm * 1.6))
+        y_max_cm    = min(320.0, max(160.0, max_meas_cm * 1.55))
 
-        # ── Row 0: temperature profiles ───────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────────────
+        # Row 0: temperature profile panel
+        # ─────────────────────────────────────────────────────────────────────
         ax0 = fig.add_subplot(gs[0, col])
 
-        # Diurnal zone band (0–80 cm) — TC sensors live here; their equilibrium
-        # T is the stable-window median but with higher diurnal spread.
+        # Diurnal zone band (0–80 cm)
         _DIURNAL_ZONE_CM = 80
-        ax0.axhspan(0, _DIURNAL_ZONE_CM, color='#F5CBA7', alpha=0.18, zorder=0,
-                    label='Diurnal zone (TC, <80 cm)')
-        ax0.axhline(_DIURNAL_ZONE_CM, color='#B7770D', lw=0.9, ls='--',
-                    alpha=0.55, zorder=1)
-        ax0.text(0.01, _DIURNAL_ZONE_CM + 1,
-                 '80 cm — diurnal boundary',
-                 fontsize=6.0, color='#8B6914', va='top', ha='left',
+        ax0.axhspan(0, _DIURNAL_ZONE_CM, color='#FFF3CD', alpha=0.55, zorder=0)
+        ax0.axhline(_DIURNAL_ZONE_CM, color='#CC8800', lw=0.9, ls='--',
+                    alpha=0.65, zorder=1)
+        ax0.text(0.99, _DIURNAL_ZONE_CM - 2,
+                 'Diurnal zone  (< 80 cm)',
+                 fontsize=6.5, color='#996600', va='bottom', ha='right',
                  transform=ax0.get_yaxis_transform())
 
-        # Clip model arrays to the displayed depth range
+        # Model profile + diurnal envelope
         mask = z_grid * 100 <= y_max_cm * 1.05
         ax0.plot(stats['T_mean'][mask], z_grid[mask] * 100,
-                 color=color, ls=ls, linewidth=2.5, label=f'{label} (mean)')
+                 color=color, ls=ls, linewidth=2.2, zorder=5,
+                 label=f'{label} (cycle mean)')
         ax0.fill_betweenx(z_grid[mask] * 100,
                           stats['T_min'][mask], stats['T_max'][mask],
-                          color=color, alpha=0.18, label='Diurnal range')
+                          color=color, alpha=0.14, zorder=4,
+                          label='Diurnal range')
 
-        # Three marker styles by sensor type:
-        #   TG (●) = gradient bridge — measures dT/dz directly, official
-        #   TR (■) = reference thermocouple — absolute T at depth
-        #   TC (▲) = cable thermocouple — shallow/diurnal zone
-        sensor_types = errors.get('apollo_sensor_types',
-                                  ['TG'] * len(a_depths))
+        # Sensor markers by type
+        sensor_types = errors.get('apollo_sensor_types', ['TG'] * len(a_depths))
         st_arr  = np.array(sensor_types)
         tg_mask = st_arr == 'TG'
         tr_mask = st_arr == 'TR'
         tc_mask = st_arr == 'TC'
 
-        if tg_mask.any():
-            ax0.plot(a_temps[tg_mask], a_depths[tg_mask] * 100,
-                     'o', color=dot_color,
-                     markersize=9, markeredgewidth=1.3,
-                     markeredgecolor='white', zorder=6,
-                     label=f'{site_name} TG — gradient bridge (official)')
-        if tr_mask.any():
-            ax0.plot(a_temps[tr_mask], a_depths[tr_mask] * 100,
-                     's', color=dot_color,
-                     markersize=7, markeredgewidth=1.3,
-                     markeredgecolor='white', alpha=0.75, zorder=5,
-                     label=f'{site_name} TR — reference thermocouple')
-        if tc_mask.any():
-            ax0.plot(a_temps[tc_mask], a_depths[tc_mask] * 100,
-                     '^', color=dot_color,
-                     markersize=7, markeredgewidth=1.0,
-                     markeredgecolor='white', alpha=0.50, zorder=4,
-                     label=f'{site_name} TC — cable (diurnal zone)')
+        _msize = {'TG': 9, 'TR': 8, 'TC': 7}
+        _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
+        _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
+        _mlbl  = {
+            'TG': 'TG  (gradient bridge, official)',
+            'TR': 'TR  (reference thermocouple)',
+            'TC': 'TC  (cable, diurnal zone)',
+        }
+        for stype, smask in [('TG', tg_mask), ('TR', tr_mask), ('TC', tc_mask)]:
+            if smask.any():
+                ax0.plot(a_temps[smask], a_depths[smask] * 100,
+                         _mmark[stype], color=dot_color,
+                         markersize=_msize[stype],
+                         markeredgewidth=1.2, markeredgecolor='white',
+                         alpha=_malph[stype], zorder=7,
+                         label=_mlbl[stype])
 
-        # ── Discrepancy-exclusion annotation ──────────────────────────────────
-        _sw = errors.get('stable_windows', [])
-        _dr = errors.get('discrepancy_regions', {})
-        _excl = []
-        for _pi, _regions in _dr.items():
-            _win = _sw[_pi] if _pi < len(_sw) else None
-            for _rs, _re, _rd in _regions:
-                if _win and (_rs > _win[1] or (_re or 9999) < _win[0]):
-                    _excl.append(f'P{_pi+1}: day {_rs}–{_re or "end"} · {_rd}')
-        if _excl:
-            ax0.text(0.02, 0.03,
-                     'Excl. from stable window:\n' + '\n'.join(_excl),
-                     transform=ax0.transAxes,
-                     fontsize=5.5, va='bottom', ha='left', color='#555',
-                     bbox=dict(boxstyle='round,pad=0.35',
-                               facecolor='#fff9e6', edgecolor='#ccc',
-                               alpha=0.90))
-
-        # Annotate deepest measurement depth
-        ax0.axhline(max_meas_cm, color=dot_color, ls='--',
-                    lw=0.8, alpha=0.45)
-
-        ax0.set_xlabel('Temperature (K)', fontsize=12, weight='bold')
-        ax0.set_ylabel('Depth (cm)',       fontsize=12, weight='bold')
-        ax0.set_ylim(y_max_cm, 0)          # zoomed — surface at top
-        # Build a compact "stable window used" string for the title
-        _win_strs = [f'P{i+1}: day {ws}–{we}'
-                     for i, (ws, we) in enumerate(_sw)]
-        _win_note = '  |  Stable window — ' + ',  '.join(_win_strs)
-
-        ax0.set_title(
-            f'{site_name}\n'
-            f'RMSE {errors["rmse"]:.2f} K  |  Bias {errors["bias"]:+.2f} K'
-            f'{_win_note}',
-            fontsize=10, weight='bold', pad=8,
-        )
-        ax0.legend(fontsize=7.5, framealpha=0.92, ncol=2,
-                   loc='upper center', bbox_to_anchor=(0.5, -0.04),
-                   borderaxespad=0, edgecolor='#cccccc')
-
-        # ── Row 1: residual lollipop chart ────────────────────────────────────
-        ax1 = fig.add_subplot(gs[1, col])
-
-        d_cm  = a_depths * 100        # depths in cm
-        # Lollipop: horizontal lines + circles (clean for publication)
-        ax1.hlines(d_cm, 0, residuals, color='#2471A3',
-                   linewidth=1.8, alpha=0.85)
-        ax1.scatter(residuals, d_cm,
-                    s=45, color='#2471A3', edgecolors='white',
-                    linewidths=0.8, zorder=4)
-        ax1.axvline(0, color='#333333', linewidth=1.2, ls='--')
-
-        ax1.set_xlabel('Residual  (Model − Measured, K)',
-                       fontsize=11, weight='bold')
-        ax1.set_ylabel('Depth (cm)', fontsize=11, weight='bold')
-        ax1.set_title('Model − Measured', fontsize=12, weight='bold', pad=6)
-        ax1.set_ylim(y_max_cm * 0.55, max(0, float(np.min(d_cm)) - 5))
-        # If TC sensors push shallower than the default top, expand upward
-        if float(np.min(d_cm)) < y_max_cm * 0.55 * 0.7:
-            ax1.set_ylim(y_max_cm * 0.55, float(np.min(d_cm)) - 5)
-        ax1.invert_yaxis()
-
-        # Minimal stats annotation inside the residuals panel
+        # R² annotation
         r2 = 1.0 - (np.sum(residuals**2) /
                     np.sum((a_temps - np.mean(a_temps))**2))
-        ax1.text(0.97, 0.05,
-                 f'RMSE {errors["rmse"]:.3f} K\n'
-                 f'Bias  {errors["bias"]:+.3f} K\n'
-                 f'MAE  {errors["mae"]:.3f} K\n'
-                 f'R²    {r2:.3f}',
-                 fontsize=8, family='monospace',
-                 ha='right', va='bottom', transform=ax1.transAxes,
-                 bbox=dict(boxstyle='round,pad=0.4',
-                           facecolor='#f7f7f7', edgecolor='#cccccc',
-                           alpha=0.9))
+        ax0.text(0.97, 0.04,
+                 f'RMSE = {errors["rmse"]:.2f} K\n'
+                 f'Bias  = {errors["bias"]:+.2f} K\n'
+                 f'R²    = {r2:.3f}',
+                 transform=ax0.transAxes, fontsize=8.5,
+                 ha='right', va='bottom', family='monospace',
+                 bbox=dict(boxstyle='round,pad=0.45',
+                           facecolor='white', edgecolor='#cccccc',
+                           alpha=0.95))
+
+        ax0.set_xlabel('Temperature (K)')
+        ax0.set_ylabel('Depth (cm)')
+        ax0.set_ylim(y_max_cm, 0)
+        ax0.set_title(site_name, pad=6)
+
+        # Legend below the axes
+        ax0.legend(fontsize=7.5, ncol=2, framealpha=0.95,
+                   loc='upper center', bbox_to_anchor=(0.5, -0.14),
+                   borderaxespad=0, edgecolor='#cccccc', handlelength=1.5)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Row 1: residual lollipop chart
+        # ─────────────────────────────────────────────────────────────────────
+        ax1 = fig.add_subplot(gs[1, col])
+
+        d_cm = a_depths * 100
+        # Colour by sign: red = warm bias, blue = cold bias
+        res_colors = ['#C0392B' if r > 0 else '#2471A3' for r in residuals]
+        ax1.hlines(d_cm, 0, residuals,
+                   colors=res_colors, linewidth=2.0, alpha=0.85, zorder=2)
+        ax1.scatter(residuals, d_cm, s=50,
+                    c=res_colors, edgecolors='white',
+                    linewidths=0.7, zorder=4)
+        ax1.axvline(0, color='#333333', linewidth=1.0, ls='--', alpha=0.6)
+
+        # ±1 K reference band
+        ax1.axvspan(-1, 1, color='#27AE60', alpha=0.07, zorder=0)
+
+        ax1.set_xlabel('Residual  (Model − Measured, K)')
+        ax1.set_ylabel('Depth (cm)')
+        ax1.set_title('Residuals', pad=4)
+
+        # Smart y-limits: show deep sensors (≥80 cm) only
+        deep_d = d_cm[d_cm >= _DIURNAL_ZONE_CM]
+        if len(deep_d):
+            ax1.set_ylim(float(np.max(deep_d)) + 8,
+                         float(np.min(deep_d)) - 8)
+        else:
+            y2max = y_max_cm * 0.58
+            ax1.set_ylim(y2max, max(0.0, float(np.min(d_cm)) - 5))
+        ax1.invert_yaxis()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Row 2: combined statistics bar chart (both sites, both metrics)
+    # ─────────────────────────────────────────────────────────────────────────
+    ax_stats = fig.add_subplot(gs[2, :])
+    ax_stats.axis('off')
+
+    _rows = ['Apollo 15', 'Apollo 17']
+    _cols = ['RMSE (K)', 'Bias (K)', 'MAE (K)', 'R²', 'SUNSCALE', 'χ', 'Albedo']
+    tbl_data = []
+    for s in _rows:
+        if s not in apollo_results:
+            tbl_data.append(['—'] * len(_cols))
+            continue
+        e = apollo_results[s]['errors']
+        at = e['apollo_temps']
+        r  = e['residuals']
+        r2 = 1.0 - np.sum(r**2) / np.sum((at - np.mean(at))**2)
+        tbl_data.append([
+            f'{e["rmse"]:.3f}', f'{e["bias"]:+.3f}',
+            f'{e["mae"]:.3f}',  f'{r2:.3f}',
+            f'{sunscale:.2f}',  f'{chi:.1f}', f'{albedo:.3f}',
+        ])
+
+    tbl = ax_stats.table(
+        cellText=tbl_data, rowLabels=_rows, colLabels=_cols,
+        cellLoc='center', rowLoc='center', loc='center',
+        bbox=[0.0, 0.0, 1.0, 1.0],
+    )
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(9)
+    # Header style
+    for j in range(len(_cols)):
+        tbl[(0, j)].set_facecolor('#2C3E50')
+        tbl[(0, j)].set_text_props(color='white', weight='bold')
+    # Row colours
+    for i, clr in enumerate(['#D6EAF8', '#D5F5E3'], start=1):
+        for j in range(-1, len(_cols)):
+            tbl[(i, j)].set_facecolor(clr)
 
     # ── Shared super-title ────────────────────────────────────────────────────
-    cfg = (f'Model: {label}   |   SUNSCALE {sunscale:.2f}   '
-           f'CHI {chi:.1f}   ALBEDO {albedo:.3f}')
-    plt.suptitle(f'Apollo 15 & 17 Dual Validation — Discrete Layers\n'
-                 f'{cfg}',
-                 fontsize=13, weight='bold', y=1.01)
+    cfg = f'Model: {label}   ·   SUNSCALE {sunscale:.2f}   ·   χ {chi:.1f}   ·   Albedo {albedo:.3f}'
+    plt.suptitle(
+        f'Apollo 15 & 17 — Thermal Model Validation\n{cfg}',
+        fontsize=12, weight='bold', y=1.005)
     plt.tight_layout()
     return fig
 
@@ -1778,4 +1856,330 @@ def batch_summary(batch_results, z_grid, figsize=(15, 10)):
 
     plt.suptitle('Batch Processing Summary', fontsize=14, weight='bold', y=0.99)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW 1.  HEAT FLUX DEPTH PROFILE   Q(z) = k(z) · dT/dz
+# ─────────────────────────────────────────────────────────────────────────────
+
+def heat_flux_profile(apollo_results, model_name,
+                      k_surface_mW=1.5, k_deep_mW=3.5,
+                      figsize=(13, 6)):
+    """
+    Compute and plot the vertical heat-flux profile Q(z) = k(z) · dT/dz for
+    both Apollo sites, overlaying measured gradient-bridge estimates.
+
+    The thermal conductivity profile follows the two-zone approximation:
+        k ≈ k_surface  for z < 0.02 m  (dry powder layer)
+        k ≈ k_deep     for z ≥ 0.02 m  (consolidated regolith)
+    Values are consistent with Langseth et al. (1976).
+
+    The Langseth basal heat-flow values are annotated:
+        Apollo 15: ~21 mW/m²
+        Apollo 17: ~16 mW/m²
+
+    Parameters
+    ----------
+    apollo_results  : same dict used by dual_apollo_comparison
+    model_name      : string key ('discrete' or 'hayne_exponential')
+    k_surface_mW    : surface-zone conductivity  (mW/m/K)
+    k_deep_mW       : deep-zone conductivity     (mW/m/K)
+    """
+    _LANGSETH = {'Apollo 15': 21.0, 'Apollo 17': 16.0}   # mW/m²
+    sites  = _APOLLO_SITES
+    colors = _APOLLO_COLORS
+    _, _, label = _model_style(model_name)
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=False)
+    fig.suptitle(
+        f'Geothermal Heat-Flux Profile  Q(z) = k(z) · dT/dz\n'
+        f'Model: {label}   ·   '
+        f'k_surface = {k_surface_mW:.1f} mW/m/K  ·  k_deep = {k_deep_mW:.1f} mW/m/K',
+        fontsize=11)
+
+    for ax, site_name, dot_color in zip(axes, sites, colors):
+        if site_name not in apollo_results:
+            ax.set_visible(False)
+            continue
+
+        errors  = apollo_results[site_name]['errors']
+        stats   = apollo_results[site_name]['stats']
+        z_grid  = stats['depth']          # metres
+        a_d     = errors['apollo_depths'] # metres
+
+        # Conductivity profile (mW/m/K → W/m/K)
+        k_profile = np.where(z_grid < 0.02,
+                             k_surface_mW * 1e-3,
+                             k_deep_mW    * 1e-3)
+
+        # Model heat flux
+        dT_dz   = np.gradient(stats['T_mean'], z_grid)    # K/m
+        Q_model = k_profile * dT_dz * 1e3                 # mW/m²
+
+        mask = z_grid * 100 <= float(np.max(a_d * 100)) * 1.6
+        ax.plot(Q_model[mask], z_grid[mask] * 100,
+                color='#C0392B', lw=2.2, zorder=4,
+                label=f'{label} Q(z)')
+        ax.fill_betweenx(z_grid[mask] * 100, 0, Q_model[mask],
+                         color='#C0392B', alpha=0.10, zorder=3)
+
+        # Measured Q at each adjacent sensor pair (deep sensors only)
+        st_arr = np.array(errors.get('apollo_sensor_types', ['TG'] * len(a_d)))
+        deep   = (a_d >= 0.80) & ((st_arr == 'TG') | (st_arr == 'TR'))
+        a_d_d  = a_d[deep]
+        a_T_d  = errors['apollo_temps'][deep]
+        if len(a_d_d) >= 2:
+            dz_m   = np.diff(a_d_d)
+            dT_m   = np.diff(a_T_d)
+            grad_m = dT_m / dz_m
+            z_mid  = 0.5 * (a_d_d[:-1] + a_d_d[1:])
+            k_mid  = np.where(z_mid < 0.02, k_surface_mW, k_deep_mW) * 1e-3
+            Q_meas = k_mid * grad_m * 1e3
+            ax.scatter(Q_meas, z_mid * 100,
+                       s=65, color=dot_color, edgecolors='white',
+                       linewidths=1.0, zorder=6,
+                       label='Measured  (adjacent pairs)')
+            for qm, zm in zip(Q_meas, z_mid * 100):
+                ax.annotate(f'{qm:+.1f}',
+                            xy=(qm, zm), xytext=(4, 0),
+                            textcoords='offset points',
+                            fontsize=7.5, color=dot_color, va='center')
+
+        # Langseth reference heat flow
+        q_ref = _LANGSETH.get(site_name)
+        if q_ref:
+            ax.axvline(q_ref, color='#27AE60', ls='--', lw=1.4, alpha=0.8,
+                       label=f'Langseth (1976): {q_ref:.0f} mW/m²')
+            ax.axvline(0, color='#888', lw=0.7, ls=':')
+
+        ax.invert_yaxis()
+        ax.set_xlabel('Heat Flux  Q  (mW/m²)')
+        ax.set_ylabel('Depth (cm)')
+        ax.set_title(site_name)
+        ax.legend(fontsize=8, framealpha=0.95, loc='lower right')
+
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW 2.  DIURNAL AMPLITUDE DECAY  vs DEPTH  (thermal skin depth)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def amplitude_decay(stats, z_grid, lat, lon, model_name=None, figsize=(10, 6)):
+    """
+    Plot the diurnal temperature amplitude A(z) = (T_max − T_min)/2 vs depth
+    and fit an exponential decay to extract the thermal skin depth δ.
+
+    The exponential model is A(z) = A₀ · exp(−z / δ), where
+        δ = sqrt(κ P / π)   (P = lunar day period, κ = thermal diffusivity)
+    Typical lunar values: δ ≈ 0.05 – 0.12 m in the surface layer.
+
+    Parameters
+    ----------
+    stats      : dict from analysis.extract_stats()
+    z_grid     : depth array (m)
+    lat, lon   : location (degrees)
+    model_name : used in title
+    """
+    amp   = stats['T_amplitude']          # K, shape (n_z,)
+    z_cm  = z_grid * 100.0
+    color, ls, label = _model_style(model_name or 'discrete')
+
+    # Fit only to the shallow zone where amplitude > 1 % of surface value
+    fit_mask = amp > 0.01 * amp[0]
+    z_fit    = z_grid[fit_mask]
+    A_fit    = amp[fit_mask]
+
+    # Linear least-squares on log(A) = log(A0) - z/delta
+    fit_ok = False
+    A0_fit = delta_fit = None
+    try:
+        log_A = np.log(A_fit)
+        # Design matrix [1, z]  →  coefficients [log(A0), -1/delta]
+        X = np.column_stack([np.ones_like(z_fit), z_fit])
+        coeffs, *_ = np.linalg.lstsq(X, log_A, rcond=None)
+        A0_fit    = np.exp(coeffs[0])
+        delta_fit = -1.0 / coeffs[1]
+        if 0.005 < delta_fit < 1.0:   # sanity bounds: 0.5 cm – 100 cm
+            fit_ok = True
+    except Exception:
+        pass
+
+    fig, (ax_main, ax_log) = plt.subplots(1, 2, figsize=figsize, sharey=False)
+    fig.suptitle(
+        f'Diurnal Amplitude Decay  —  {_subtitle(lat, lon, model_name)}')
+
+    # ── Left: linear scale ────────────────────────────────────────────────────
+    ax_main.plot(amp, z_cm, color=color, lw=2.2, ls=ls, label='Amplitude A(z)')
+    ax_main.fill_betweenx(z_cm, 0, amp, color=color, alpha=0.12)
+
+    if fit_ok:
+        z_fine  = np.linspace(z_grid[0], z_grid[fit_mask][-1], 400)
+        A_fine  = A0_fit * np.exp(-z_fine / delta_fit)
+        ax_main.plot(A_fine, z_fine * 100, 'k--', lw=1.6,
+                     label=f'Fit: δ = {delta_fit * 100:.1f} cm\n'
+                           f'     A₀ = {A0_fit:.1f} K')
+        # Skin-depth marker
+        ax_main.axhline(delta_fit * 100, color='gray', ls=':',
+                        lw=1.0, alpha=0.7)
+        ax_main.text(amp[0] * 0.5, delta_fit * 100 + 0.5,
+                     f'δ = {delta_fit * 100:.1f} cm',
+                     fontsize=8.5, color='gray', va='bottom')
+
+    ax_main.invert_yaxis()
+    ax_main.set_xlabel('Amplitude  A(z)  (K)')
+    ax_main.set_ylabel('Depth (cm)')
+    ax_main.set_title('Linear scale')
+    ax_main.legend(fontsize=8.5, framealpha=0.95)
+    ax_main.set_xlim(left=0)
+
+    # ── Right: log scale — straight line if truly exponential ────────────────
+    pos_mask = amp > 0
+    ax_log.semilogy(amp[pos_mask], z_cm[pos_mask],
+                    color=color, lw=2.2, ls=ls, label='A(z)')
+    ax_log.fill_betweenx(z_cm[pos_mask], 1e-3, amp[pos_mask],
+                          color=color, alpha=0.10)
+    if fit_ok:
+        A_fine_pos = A_fine[A_fine > 0]
+        z_fine_pos = z_fine[:len(A_fine_pos)]
+        ax_log.semilogy(A_fine_pos, z_fine_pos * 100, 'k--', lw=1.6,
+                        label=f'Exp. fit  (R² = {1.0:.2f})')
+
+    ax_log.invert_yaxis()
+    ax_log.set_xlabel('Amplitude  A(z)  (K, log scale)')
+    ax_log.set_ylabel('Depth (cm)')
+    ax_log.set_title('Log scale  (straight = exponential decay)')
+    ax_log.legend(fontsize=8.5, framealpha=0.95)
+    ax_log.yaxis.set_minor_locator(mticker.AutoMinorLocator())
+
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW 3.  COMBINED HEAT-FLOW SUMMARY  (A15 vs A17 bar chart + profile)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def combined_heat_flow(apollo_results, model_name,
+                       k_surface_mW=1.5, k_deep_mW=3.5,
+                       figsize=(13, 7)):
+    """
+    Publication-ready two-panel figure summarising the heat-flow result.
+
+    Left  : Bar chart comparing modelled vs Langseth (1976) heat flow at
+            Apollo 15 and Apollo 17, with ±uncertainty band.
+    Right : Geothermal gradient dT/dz vs depth for both sites overlaid.
+
+    Parameters
+    ----------
+    apollo_results  : same dict used by dual_apollo_comparison
+    model_name      : model key
+    k_surface_mW    : surface conductivity (mW/m/K)
+    k_deep_mW       : deep conductivity    (mW/m/K)
+    """
+    _LANGSETH   = {'Apollo 15': 21.0, 'Apollo 17': 16.0}  # mW/m²
+    _LANGSETH_E = {'Apollo 15':  3.0, 'Apollo 17':  2.0}  # ±uncertainty
+
+    sites  = _APOLLO_SITES
+    colors = _APOLLO_COLORS
+    _, _, label = _model_style(model_name)
+
+    # ── Compute modelled heat flow at each site ───────────────────────────────
+    q_model = {}
+    grad_data = {}
+    for site_name in sites:
+        if site_name not in apollo_results:
+            continue
+        stats  = apollo_results[site_name]['stats']
+        z_grid = stats['depth']
+        # Use the deep zone (0.5–2 m) where gradient is steady
+        deep   = (z_grid >= 0.5) & (z_grid <= 2.0)
+        if not deep.any():
+            deep = z_grid >= 0.3
+        dT_dz_deep = np.gradient(stats['T_mean'][deep], z_grid[deep])
+        Q_deep_mW  = float(np.mean(dT_dz_deep)) * k_deep_mW   # mW/m²
+
+        q_model[site_name] = Q_deep_mW
+
+        # Full gradient profile for the right panel
+        dT_dz = np.gradient(stats['T_mean'], z_grid)
+        grad_data[site_name] = (z_grid, dT_dz)
+
+    # ── Figure layout ─────────────────────────────────────────────────────────
+    fig, (ax_bar, ax_grad) = plt.subplots(1, 2, figsize=figsize,
+                                           gridspec_kw={'width_ratios': [1.1, 1.6]})
+
+    # ── Left: bar chart ───────────────────────────────────────────────────────
+    x      = np.arange(len(sites))
+    width  = 0.35
+    q_ref  = [_LANGSETH.get(s, 0) for s in sites]
+    q_err  = [_LANGSETH_E.get(s, 0) for s in sites]
+    q_mod  = [q_model.get(s, 0) for s in sites]
+    clrs   = colors
+
+    bars_ref = ax_bar.bar(x - width / 2, q_ref, width,
+                          color='#95A5A6', edgecolor='white', linewidth=0.8,
+                          label='Langseth et al. (1976)', zorder=3)
+    ax_bar.errorbar(x - width / 2, q_ref, yerr=q_err,
+                    fmt='none', color='#2C3E50', lw=1.8, capsize=5, zorder=4)
+    bars_mod = ax_bar.bar(x + width / 2, q_mod, width,
+                          color=clrs, edgecolor='white', linewidth=0.8,
+                          label='This model', zorder=3)
+
+    # Value labels
+    for bar, v in zip(bars_ref, q_ref):
+        ax_bar.text(bar.get_x() + bar.get_width() / 2, v + 0.4,
+                    f'{v:.0f}', ha='center', va='bottom', fontsize=9, color='#333')
+    for bar, v in zip(bars_mod, q_mod):
+        ax_bar.text(bar.get_x() + bar.get_width() / 2, max(0, v) + 0.4,
+                    f'{v:+.1f}', ha='center', va='bottom', fontsize=9,
+                    color='#C0392B' if v < 0 else '#1E8449')
+
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(sites, fontsize=10)
+    ax_bar.set_ylabel('Heat Flux  (mW/m²)')
+    ax_bar.set_title('Modelled vs Measured\nGeothermal Heat Flow')
+    ax_bar.legend(fontsize=8.5, framealpha=0.95)
+    ax_bar.set_ylim(bottom=0)
+    ax_bar.axhline(0, color='black', lw=0.6)
+
+    # ── Right: gradient profiles ──────────────────────────────────────────────
+    for (site_name, (z_g, dT_dz)), dot_color in zip(grad_data.items(), colors):
+        errors = apollo_results[site_name]['errors']
+        a_d    = errors['apollo_depths']
+        a_T    = errors['apollo_temps']
+        max_cm = float(np.max(a_d * 100)) * 1.5
+        mask   = z_g * 100 <= max_cm
+
+        ax_grad.plot(dT_dz[mask] * 1000, z_g[mask] * 100,   # mK/m
+                     lw=2.0, color=dot_color, label=f'{site_name} (model)')
+
+        # Measured gradient from adjacent deep sensors
+        st_arr = np.array(errors.get('apollo_sensor_types', ['TG'] * len(a_d)))
+        deep   = a_d >= 0.80
+        a_d_d  = a_d[deep]; a_T_d = a_T[deep]
+        if len(a_d_d) >= 2:
+            dz_m   = np.diff(a_d_d)
+            dT_m   = np.diff(a_T_d)
+            grad_m = dT_m / dz_m   # K/m
+            z_mid  = 0.5 * (a_d_d[:-1] + a_d_d[1:])
+            ax_grad.scatter(grad_m * 1000, z_mid * 100,
+                            s=60, color=dot_color, edgecolors='white',
+                            lw=1.0, zorder=5,
+                            label=f'{site_name} (measured)')
+
+    ax_grad.axvline(0, color='#888', lw=0.8, ls='--')
+    ax_grad.invert_yaxis()
+    ax_grad.set_xlabel('Temperature Gradient  dT/dz  (mK/m)')
+    ax_grad.set_ylabel('Depth (cm)')
+    ax_grad.set_title('Geothermal Gradient Profile\n(solid = model, circles = measured)')
+    ax_grad.legend(fontsize=8.5, framealpha=0.95, ncol=2)
+
+    fig.suptitle(
+        f'Lunar Geothermal Heat Flow — {label}\n'
+        f'k_surface = {k_surface_mW:.1f} mW/m/K  ·  k_deep = {k_deep_mW:.1f} mW/m/K',
+        fontsize=11)
+    plt.tight_layout()
     return fig
