@@ -249,3 +249,101 @@ def get_timeseries(site_name):
         for data in probe.values():
             data['probe_label'] = label
     return probes
+
+
+def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
+    """
+    Phase-fold Apollo HFE readings from the stable window into a single
+    representative lunar-day diurnal cycle.
+
+    Method
+    ------
+    For each sensor, readings from the last *n_lunar_days* × 29.53 Earth days
+    inside the stable window are taken.  Each timestamp is mapped to a phase
+    angle within the lunar day:
+
+        phase_h = (days_since_win_start  mod  29.53) × 24   [hours]
+
+    Readings are sorted by phase and returned alongside a zero-mean temperature
+    anomaly (T − <T>), so curves from different depths can be overlaid on the
+    same axes regardless of their absolute temperature offsets.
+
+    Parameters
+    ----------
+    site_name     : 'Apollo 15' or 'Apollo 17'
+    n_lunar_days  : number of lunar days to fold (more = smoother curve)
+
+    Returns
+    -------
+    dict  {depth_cm: {'time_h'  : ndarray  — hours within lunar day [0, 708]
+                      'T_raw'   : ndarray  — absolute temperature (K)
+                      'T_anom'  : ndarray  — T − mean(T) (K)
+                      'T_mean'  : float    — mean temperature over folded window
+                      'sensor'  : str      — sensor name
+                      'stype'   : str      — 'TG', 'TR', or 'TC'}}
+    Multiple sensors at the same depth_cm are merged; the one with the most
+    readings is kept.
+    """
+    LUNAR_DAY_DAYS = 29.53   # synodic month in Earth days
+
+    probes  = load_site(site_name)
+    windows = _STABLE_WINDOWS[site_name]
+    result  = {}            # depth_cm → best entry
+
+    for probe, (win_start, win_end) in zip(probes, windows):
+        # Probe epoch: earliest timestamp across all sensors
+        all_t0 = min(
+            (data['times'][0].timestamp() / 86400
+             for data in probe.values() if len(data['times']) > 0),
+            default=None,
+        )
+        if all_t0 is None:
+            continue
+
+        # Use the last n_lunar_days inside the stable window
+        sel_end   = float(win_end)
+        sel_start = max(float(win_start), sel_end - n_lunar_days * LUNAR_DAY_DAYS)
+
+        for sensor, data in probe.items():
+            d_cm  = data['depth_cm']
+            times = data['times']
+            temps = data['temps']
+            if len(temps) < 10:
+                continue
+
+            t_days = np.array([t.timestamp() / 86400 for t in times]) - all_t0
+            mask   = (t_days >= sel_start) & (t_days <= sel_end)
+            if mask.sum() < 10:
+                continue
+
+            t_sel = t_days[mask]
+            T_sel = temps[mask]
+
+            # Phase-fold: map each timestamp to position within one lunar day
+            t_phase_h = ((t_sel - sel_start) % LUNAR_DAY_DAYS) * 24.0
+            sort_idx  = np.argsort(t_phase_h)
+            t_ph      = t_phase_h[sort_idx]
+            T_ph      = T_sel[sort_idx]
+
+            T_mean = float(np.mean(T_ph))
+            T_anom = T_ph - T_mean
+
+            stype = ''.join(c for c in sensor if c.isalpha())[:2]
+
+            # Keep the sensor with the most readings per depth
+            if d_cm not in result or mask.sum() > result[d_cm]['_n']:
+                result[d_cm] = {
+                    'time_h': t_ph,
+                    'T_raw':  T_ph,
+                    'T_anom': T_anom,
+                    'T_mean': T_mean,
+                    'sensor': sensor,
+                    'stype':  stype,
+                    '_n':     int(mask.sum()),
+                }
+
+    # Remove internal counter before returning
+    for v in result.values():
+        v.pop('_n', None)
+
+    return result

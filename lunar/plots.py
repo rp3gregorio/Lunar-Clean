@@ -189,6 +189,160 @@ def diurnal_cycles(cycles, lat, lon, model_name=None, sunscale=None,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 1b. DIURNAL PROBE vs MODELS  — actual Apollo readings vs two model predictions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
+                             site_name, lat, lon,
+                             model_name='This model',
+                             hayne_name='Hayne 2017',
+                             figsize=(14, 9)):
+    """
+    Compare Apollo HFE measured diurnal temperature variations with two model
+    predictions (the user's model and the Hayne 2017 model).
+
+    Each sub-panel shows one sensor depth available in the Apollo data.
+    Both model diurnal cycles are interpolated to the same depth.
+    The three curves are zero-mean normalised (T − <T>) so amplitude and phase
+    can be compared without absolute-temperature offsets.
+
+    Parameters
+    ----------
+    probe_diurnal : dict from hfe_loader.get_probe_diurnal_cycle() —
+                    {depth_cm: {'time_h', 'T_anom', 'T_mean', 'sensor', 'stype'}}
+    cycles_model  : dict from analysis.get_diurnal_cycles() for the user's model
+    cycles_hayne  : dict from analysis.get_diurnal_cycles() for the Hayne model
+    site_name     : 'Apollo 15' or 'Apollo 17'  (for axis labels)
+    lat, lon      : site coordinates
+    model_name    : label for the user's model curve
+    hayne_name    : label for the Hayne model curve
+    figsize       : figure size
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    from lunar.constants import LUNAR_DAY
+
+    if not probe_diurnal:
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.set_title('No probe diurnal data available')
+        return fig
+
+    day_h = LUNAR_DAY / 3600.0
+
+    # ── Determine shared depths ──────────────────────────────────────────────
+    # Pick probe depths that also have model data within ±10 cm.
+    # Sort depths shallow → deep for intuitive panel ordering.
+    def _closest_model_depth(depth_m, cycles):
+        """Return the closest available model depth in cycles dict (metres)."""
+        if not cycles:
+            return None
+        return min(cycles.keys(), key=lambda d: abs(d - depth_m))
+
+    # Use all probe depths; model will be interpolated
+    probe_depths_cm = sorted(probe_diurnal.keys())
+
+    # ── Layout ───────────────────────────────────────────────────────────────
+    n = len(probe_depths_cm)
+    ncols = min(3, n)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
+                              sharex=True, squeeze=False)
+    axes_flat = axes.flatten()
+
+    # Helper: extract zero-mean model anomaly at depth depth_m
+    def _model_anom(cycles, depth_m):
+        if not cycles:
+            return None, None
+        d_key = _closest_model_depth(depth_m, cycles)
+        if d_key is None:
+            return None, None
+        t_h = cycles[d_key]['time_h']
+        T   = np.asarray(cycles[d_key]['temperature'], dtype=float)
+        return t_h, T - float(np.mean(T))
+
+    # Marker shape by sensor type
+    _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
+    _mlbl  = {'TG': 'TG', 'TR': 'TR', 'TC': 'TC'}
+
+    for ax_idx, d_cm in enumerate(probe_depths_cm):
+        ax = axes_flat[ax_idx]
+        entry  = probe_diurnal[d_cm]
+        stype  = entry.get('stype', 'TG')
+        sensor = entry.get('sensor', f'{d_cm} cm')
+        t_ph   = entry['time_h']
+        T_anom = entry['T_anom']
+
+        # ── Probe data ───────────────────────────────────────────────────────
+        # Thin grey scatter for individual readings, bold marker for binned mean
+        # Bin into ~24 equal-width bins (one per ~30-hour bin ≈ 1 lunar "hour")
+        n_bins    = 48
+        bin_edges = np.linspace(0, day_h, n_bins + 1)
+        bin_mids  = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        bin_idx   = np.searchsorted(bin_edges, t_ph, side='right') - 1
+        bin_idx   = np.clip(bin_idx, 0, n_bins - 1)
+        bin_mean  = np.full(n_bins, np.nan)
+        bin_std   = np.full(n_bins, np.nan)
+        for b in range(n_bins):
+            vals = T_anom[bin_idx == b]
+            if len(vals) >= 3:
+                bin_mean[b] = np.mean(vals)
+                bin_std[b]  = np.std(vals)
+
+        # Raw scatter (very light)
+        ax.scatter(t_ph, T_anom, s=1, alpha=0.08, color='#888888',
+                   rasterized=True, zorder=1)
+        # Binned mean ± std
+        good = ~np.isnan(bin_mean)
+        mk   = _mmark.get(stype, 'o')
+        ax.errorbar(bin_mids[good], bin_mean[good], yerr=bin_std[good],
+                    fmt=mk, markersize=5, color='#2C3E50',
+                    ecolor='#888888', elinewidth=0.8, capsize=2,
+                    linewidth=1.2, zorder=4,
+                    label=f'Apollo {_mlbl[stype]}  ({sensor})')
+
+        # ── Model 1 (user's model) ───────────────────────────────────────────
+        t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
+        if t1 is not None:
+            ax.plot(t1, A1, lw=2.0, color='#2471A3', zorder=5,
+                    label=model_name)
+
+        # ── Model 2 (Hayne) ──────────────────────────────────────────────────
+        t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
+        if t2 is not None:
+            ax.plot(t2, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
+                    label=hayne_name)
+
+        # ── Night shading ────────────────────────────────────────────────────
+        half = day_h / 2.0
+        ax.axvspan(0,          half * 0.48, color='#1a1a2e', alpha=0.07, zorder=0)
+        ax.axvspan(half * 1.52, day_h,      color='#1a1a2e', alpha=0.07, zorder=0)
+        ax.axhline(0, color='#888', lw=0.7, ls=':')
+
+        ax.set_title(f'{d_cm} cm  ({stype})', fontsize=10, weight='bold')
+        ax.set_xlim(0, day_h)
+        if ax_idx % ncols == 0:
+            ax.set_ylabel('T anomaly (K)', fontsize=9)
+        if ax_idx >= (nrows - 1) * ncols:
+            ax.set_xlabel('Hours within lunar day', fontsize=9)
+        ax.legend(fontsize=7.5, framealpha=0.9, handlelength=1.6)
+
+    # Hide unused panels
+    for ax_idx in range(n, len(axes_flat)):
+        axes_flat[ax_idx].set_visible(False)
+
+    fig.suptitle(
+        f'{site_name} — Diurnal Temperature Cycle: Apollo Probe vs Models\n'
+        f'Lat {lat:.2f}°  ·  Lon {lon:.2f}°  ·  '
+        f'Points = Apollo phase-folded readings  ·  Lines = model diurnal cycles',
+        fontsize=11, weight='bold', y=1.01,
+    )
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 2. TEMPERATURE HEATMAP (depth × time)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -282,9 +436,20 @@ def apollo_comparison(stats, errors, site_name, model_name,
              linewidth=3, label=f'{label} (mean)')
     ax1.fill_betweenx(z_grid * 100, stats['T_min'], stats['T_max'],
                       color=color, alpha=0.15, label='Diurnal range')
-    ax1.plot(a_temps, a_depths * 100, 'o', color='#1A5276',
-             markersize=9, markeredgewidth=1.5, markeredgecolor='white',
-             label=f'{site_name} measured', zorder=5)
+    _msize = {'TG': 9, 'TR': 8, 'TC': 7}
+    _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
+    _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
+    _mlbl  = {'TG': 'TG  (gradient bridge)', 'TR': 'TR  (reference TC)',
+               'TC': 'TC  (cable, diurnal zone)'}
+    _st_arr = np.array(errors.get('apollo_sensor_types', ['TG'] * len(a_depths)))
+    for stype in ('TG', 'TR', 'TC'):
+        _smask = _st_arr == stype
+        if _smask.any():
+            ax1.plot(a_temps[_smask], a_depths[_smask] * 100,
+                     _mmark[stype], color='#1A5276',
+                     markersize=_msize[stype],
+                     markeredgewidth=1.4, markeredgecolor='white',
+                     alpha=_malph[stype], zorder=5, label=_mlbl[stype])
 
     max_meas_cm = float(np.max(a_depths * 100))
     y_max_cm    = min(320.0, max(150.0, max_meas_cm * 1.6))
@@ -2352,19 +2517,23 @@ def polar_diurnal(cycles, depths_m=(0.0, 0.35, 1.0, 2.0),
 
 def borestem_correction_plot(stats, apollo_data, site_name,
                               correction_dT, figsize=(12, 7)):
-    """Three-panel figure: mean T profile, borestem correction ΔT, and residuals.
+    """Two-panel figure: mean T profile with borestem correction, and ΔT(z).
 
     Parameters
     ----------
     stats         : dict with keys 'z_grid', 'T_mean_profile', 'lat', 'lon'
-    apollo_data   : dict {'depths': array (m), 'T_K': array (K)}
+    apollo_data   : dict with keys:
+                      'depths'       — array (m)
+                      'T_K'          — array (K)
+                      'sensor_types' — list of 'TG'/'TR'/'TC' (optional)
     site_name     : '15' or '17'
     correction_dT : array (n,) — total warm bias at each Z_GRID node (K)
     """
     z_grid  = np.asarray(stats.get('z_grid', []))
     T_model = np.asarray(stats.get('T_mean_profile', stats.get('T_mean', [])))
     a_d     = np.asarray(apollo_data.get('depths', []))
-    a_T     = np.asarray(apollo_data.get('T_K', []))
+    a_T     = np.asarray(apollo_data.get('T_K',    []))
+    a_st    = list(apollo_data.get('sensor_types',  ['TG'] * len(a_d)))
     corr    = np.asarray(correction_dT)
 
     if T_model.size == 0 or z_grid.size == 0:
@@ -2387,10 +2556,21 @@ def borestem_correction_plot(stats, apollo_data, site_name,
     ax1.plot(T_corrected, z_grid * 100, lw=2.5, color='#C0392B', ls='--',
              label='Model (borestem corrected)', zorder=4)
     if a_d.size:
-        ax1.scatter(a_T, a_d * 100,
-                    s=80, color=site_color, edgecolors='white',
-                    linewidths=1.2, zorder=5,
-                    label=f'Apollo {site_name} (Langseth 1976)')
+        _msize = {'TG': 9, 'TR': 8, 'TC': 7}
+        _mmark = {'TG': 'o', 'TR': 's', 'TC': '^'}
+        _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
+        _mlbl  = {'TG': 'TG  (gradient bridge)', 'TR': 'TR  (reference TC)',
+                   'TC': 'TC  (cable, diurnal zone)'}
+        st_arr = np.array(a_st)
+        for stype in ('TG', 'TR', 'TC'):
+            smask = st_arr == stype
+            if smask.any():
+                ax1.plot(a_T[smask], a_d[smask] * 100,
+                         _mmark[stype], color=site_color,
+                         markersize=_msize[stype],
+                         markeredgewidth=1.2, markeredgecolor='white',
+                         alpha=_malph[stype], zorder=5,
+                         label=_mlbl[stype])
 
     ax1.invert_yaxis()
     ax1.set_xlabel('Temperature (K)', fontsize=11, weight='bold')
