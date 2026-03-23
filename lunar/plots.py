@@ -64,6 +64,9 @@ _MODEL_LINES = {
     'custom':            '-.',
 }
 
+_APOLLO_SITES  = ['Apollo 15', 'Apollo 17']
+_APOLLO_COLORS = ['#1A5276', '#7D3C98']   # navy blue, purple
+
 
 def _model_style(model_name):
     """Return (color, linestyle, label) for a model name."""
@@ -296,8 +299,8 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
     -------
     matplotlib.figure.Figure
     """
-    sites  = ['Apollo 15', 'Apollo 17']
-    colors = ['#1A5276', '#7D3C98']   # navy blue for A15, purple for A17
+    sites  = _APOLLO_SITES
+    colors = _APOLLO_COLORS
     color, ls, label = _model_style(model_name)
 
     fig = plt.figure(figsize=figsize)
@@ -479,8 +482,8 @@ def apollo_gradient_profile(apollo_results, model_name, k_Wpm_pK=3.5e-3,
     model_name     : string for legend
     k_Wpm_pK       : thermal conductivity (W/m/K); default 3.5e-3 W/m/K
     """
-    sites  = ['Apollo 15', 'Apollo 17']
-    colors = ['#1A5276', '#7D3C98']
+    sites  = _APOLLO_SITES
+    colors = _APOLLO_COLORS
     _, _, label = _model_style(model_name)
 
     fig, axes = plt.subplots(1, 2, figsize=figsize, sharey=False)
@@ -504,9 +507,10 @@ def apollo_gradient_profile(apollo_results, model_name, k_Wpm_pK=3.5e-3,
         z_mid_cm  = 0.5 * (a_depths[:-1] + a_depths[1:]) * 100
         Q_meas_mW = grad_meas * k_Wpm_pK * 1e3
 
-        grad_model = np.gradient(stats['T_mean'], z_grid)
-        mask = z_grid * 100 <= float(np.max(a_depths * 100)) * 1.6
-        ax.plot(grad_model[mask], z_grid[mask] * 100,
+        mask      = z_grid * 100 <= np.max(a_depths * 100) * 1.6
+        z_clip    = z_grid[mask]
+        grad_model = np.gradient(stats['T_mean'][mask], z_clip)
+        ax.plot(grad_model, z_clip * 100,
                 color='#C0392B', lw=2.0, ls='-', label=f'{label} dT/dz')
 
         ax.scatter(grad_meas, z_mid_cm, s=60, color=dot_color,
@@ -520,7 +524,6 @@ def apollo_gradient_profile(apollo_results, model_name, k_Wpm_pK=3.5e-3,
 
         ax.axvline(0, color='#888', lw=0.8, ls='--')
         ax.invert_yaxis()
-        # Clip x-axis to the sensor gradient range (avoid surface spike)
         g_range = np.abs(grad_meas).max() * 1.5 + 0.01
         ax.set_xlim(-g_range, g_range)
         ax.set_xlabel('dT/dz  (K/m)', fontsize=11, weight='bold')
@@ -584,9 +587,11 @@ def sensor_equilibration(site_name, window_days=60, figsize=(14, 5)):
             temps = data['temps']
 
             t_centers = np.arange(half, t_num[-1], window_days / 4)
-            roll_med  = [(tc, float(np.median(temps[(t_num >= tc-half) & (t_num <= tc+half)])))
-                         for tc in t_centers
-                         if ((t_num >= tc-half) & (t_num <= tc+half)).sum() >= 3]
+            roll_med = []
+            for tc in t_centers:
+                win = (t_num >= tc - half) & (t_num <= tc + half)
+                if win.sum() >= 3:
+                    roll_med.append((tc, float(np.median(temps[win]))))
             if not roll_med:
                 continue
             tc_arr, tm_arr = zip(*roll_med)
@@ -602,7 +607,7 @@ def sensor_equilibration(site_name, window_days=60, figsize=(14, 5)):
         ax.set_title(probe_label, fontsize=11, weight='bold')
         ax.set_xlabel('Days since emplacement', fontsize=10, weight='bold')
         ax.set_ylabel('Rolling median T (K)',   fontsize=10, weight='bold')
-        ax.legend(fontsize=7, ncol=1, framealpha=0.9, loc='upper right')
+        ax.legend(fontsize=7, framealpha=0.9, loc='upper right')
 
     plt.tight_layout()
     return fig
