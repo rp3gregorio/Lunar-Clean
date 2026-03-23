@@ -17,8 +17,44 @@ Q_basal    = 18e-3              # Basal heat flux (W m⁻²) — from Apollo HFE
 LUNAR_DAY  = 29.53 * 86400.0   # Synodic lunar day (s)
 
 # ── Default surface properties (can be overridden in config) ───────────────────
-DEFAULT_ALBEDO     = 0.09   # Bond albedo — typical lunar regolith
+DEFAULT_ALBEDO     = 0.09   # Bond albedo — typical undisturbed, space-weathered regolith
 DEFAULT_EMISSIVITY = 0.95   # Infrared emissivity — typical lunar regolith
+
+# ── Albedo variants: disturbed vs undisturbed regolith ─────────────────────────
+# Space weathering (solar wind, micrometeorite gardening) darkens the surface
+# by creating agglutinates and nanophase iron → A ≈ 0.07–0.09.
+# When astronauts disturb the surface they expose fresher, less-weathered
+# material that reflects more light → A ≈ 0.12–0.15.
+# This has a measurable effect on surface temperature: ΔT_surf ≈ 5–12 K.
+# References: Lucey et al. 2000 (J. Geophys. Res.); Hapke 2001; Pieters & Englert 1993
+UNDISTURBED_ALBEDO    = 0.09   # Same as DEFAULT_ALBEDO (space-weathered baseline)
+DISTURBED_ALBEDO      = 0.12   # Freshly disturbed regolith — drill site / boot tracks
+FRESH_HIGHLAND_ALBEDO = 0.15   # Very fresh highland material (crater rays, etc.)
+
+# ── Apollo borestem (fiberglass drill casing) thermal properties ──────────────
+# The Apollo HFE probes were lowered into bore holes lined with a hollow
+# fiberglass "borestem" casing (roughly 2.5 cm outer diameter).
+# Fiberglass k_f ≈ 0.04 W/m/K — about 40× higher than dry regolith surface
+# conductivity (~0.001 W/m/K). This creates a "thermal short-circuit" that
+# preferentially conducts heat from the warm surface layer down to the sensors,
+# causing readings to be slightly warmer than the true undisturbed regolith.
+# References: Langseth et al. 1976; Warren 1969 (HFE hardware description)
+BORESTEM_OUTER_RADIUS_M  = 0.0125   # 2.5 cm outer diameter → 1.25 cm radius
+BORESTEM_WALL_M          = 0.003    # ~3 mm fiberglass wall thickness
+K_FIBERGLASS             = 0.04     # W/m/K — typical E-glass / epoxy composite
+BORESTEM_DEPTH_M         = 2.5      # Depth of fiberglass casing (m)
+BORESTEM_DISTURBED_RADIUS = 0.05    # Radius of mechanically disturbed zone (m)
+
+# ── Probe-top solar radiation constants ────────────────────────────────────────
+# The Apollo probe cable and connector hardware at the surface absorbed direct
+# solar radiation. This heat was conducted downward through the probe body and
+# cable, raising temperatures at the sensors above the true regolith value.
+# Effect is largest near the surface and for shallower sensors.
+# Estimated from Langseth et al. 1976 thermal disturbance analysis.
+PROBE_TOP_AREA_CM2  = 3.0    # Effective solar-absorbing area of probe top (cm²)
+PROBE_TOP_ALBEDO    = 0.25   # Polished metallic hardware — lower absorption than regolith
+PROBE_CABLE_K_EFF   = 0.02   # Effective axial conductance of probe cable (W/m/K)
+PROBE_CABLE_AREA_M2 = 5.0e-6 # Cable cross-sectional area (m²) — ~2.5 mm diameter
 
 # ── Depth-grid configuration ───────────────────────────────────────────────────
 # The model uses a non-uniform grid: fine near the surface (where most variation
