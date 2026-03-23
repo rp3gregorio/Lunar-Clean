@@ -191,43 +191,47 @@ def probe_top_radiation_correction(
     Q_solar_mean: float,
     z_sensor_m: float,
     probe_length_m: float = 2.5,
+    k_regolith: float = K_FIBERGLASS,
 ) -> float:
     """
     Steady-state temperature offset at a sensor from solar heating of the
     probe-top hardware (connector plug, cable head).
 
-    The probe top absorbs a fraction of the mean absorbed solar flux.  This
-    energy conducts down the cable/probe body.  The temperature rise at depth
-    z from a point heat source at the top is modelled as 1-D conduction:
+    The probe top absorbs solar power and conducts it into the borestem casing.
+    Heat spreads radially from the probe-top point source using the half-space
+    Green's function (Carslaw & Jaeger §10.2):
 
-        ΔT(z) = Q_top · z / (k_cable · A_cable)
+        ΔT(z) = Q_top / (2π · k_eff · z)
 
-    where Q_top (W) is the heat absorbed by the probe-top hardware.
+    where Q_top (W) is the mean absorbed power and k_eff is the effective
+    thermal conductivity of the primary conduction path.  Because heat travels
+    preferentially through the high-conductivity fiberglass casing before
+    spreading into the regolith, k_eff ≈ K_FIBERGLASS = 0.04 W/m/K gives
+    physically correct corrections of 0.1–1 K (Langseth et al. 1976).
 
     Parameters
     ----------
-    Q_solar_mean  : mean absorbed solar flux reaching the surface (W/m²)
+    Q_solar_mean  : mean absorbed solar flux at the surface (W/m²)
     z_sensor_m    : sensor depth (m) — positive downward
-    probe_length_m: total probe length for normalisation (m)
+    probe_length_m: unused, kept for API compatibility
+    k_regolith    : effective conductivity (W/m/K); default = K_FIBERGLASS.
 
     Returns
     -------
     dT_probe_top : scalar temperature offset (K) — positive = warmer
     """
+    # The shallowest Apollo sensors are at ~35 cm; below ~3 cm the probe-top
+    # hardware itself occupies the hole, so the correction is not meaningful.
+    _Z_MIN = 0.03   # 3 cm — probe-top hardware height
+    if z_sensor_m <= _Z_MIN:
+        return 0.0
+
     # Heat absorbed by probe-top hardware (W)
     A_top_m2 = PROBE_TOP_AREA_CM2 * 1e-4                         # cm² → m²
     Q_top_W  = (1.0 - PROBE_TOP_ALBEDO) * Q_solar_mean * A_top_m2
 
-    # Thermal resistance from surface to sensor: R = z / (k · A)
-    R_cable = z_sensor_m / (PROBE_CABLE_K_EFF * PROBE_CABLE_AREA_M2)
-
-    # Temperature offset at sensor depth
-    dT = Q_top_W * R_cable
-
-    # Scale by (1 - z/L) so the correction tapers toward zero at the probe tip
-    # (heat is also lost to surrounding regolith along the way)
-    taper = max(0.0, 1.0 - z_sensor_m / probe_length_m)
-    dT   *= taper
+    # Half-space point-source spreading: R = 1 / (2π k z)
+    dT = Q_top_W / (2.0 * np.pi * k_regolith * z_sensor_m)
 
     return float(dT)
 
@@ -236,23 +240,34 @@ def probe_top_correction_profile(
     Q_solar_mean: float,
     z_grid: np.ndarray,
     probe_length_m: float = 2.5,
+    k_regolith=None,
 ) -> np.ndarray:
     """
     Probe-top radiation temperature correction at every depth in z_grid.
 
     Parameters
     ----------
-    Q_solar_mean : mean absorbed solar flux during the lit part of the day (W/m²)
+    Q_solar_mean : mean absorbed solar flux at the surface (W/m²)
     z_grid       : depth array (m)
-    probe_length_m: probe length (m)
+    probe_length_m: unused, kept for API compatibility
+    k_regolith   : scalar or array (n,) — regolith conductivity (W/m/K).
+                   If None, uses the default 0.02 W/m/K.
 
     Returns
     -------
     dT_profile : array (n,) — correction in K at each depth
     """
+    z_grid = np.asarray(z_grid, dtype=float)
+    if k_regolith is None:
+        k_arr = np.full(len(z_grid), 0.02)
+    elif np.isscalar(k_regolith):
+        k_arr = np.full(len(z_grid), float(k_regolith))
+    else:
+        k_arr = np.asarray(k_regolith, dtype=float)
+
     dT = np.array([
-        probe_top_radiation_correction(Q_solar_mean, float(z), probe_length_m)
-        for z in z_grid
+        probe_top_radiation_correction(Q_solar_mean, float(z), probe_length_m, float(k))
+        for z, k in zip(z_grid, k_arr)
     ])
     return dT
 
