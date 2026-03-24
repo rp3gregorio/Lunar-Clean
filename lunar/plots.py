@@ -3441,3 +3441,94 @@ def apollo_sites_overview(elev_m_a15, map_res_a15,
     fig.suptitle('Apollo 15 & 17 Landing Site Terrain  |  LOLA/LRO',
                  fontsize=13, weight='bold')
     return fig
+
+# ─────────────────────────────────────────────────────────────────────────────
+# hfe_full_timeseries
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hfe_full_timeseries(site_name, all_depths=False, figsize=(15, 10)):
+    """All-probe, all-depth temperature timeseries for one Apollo HFE site.
+
+    Shows every sensor with raw temperatures, marks the stable validation
+    window in green, and annotates known thermal-disturbance periods in pink.
+
+    Parameters
+    ----------
+    site_name  : str   'Apollo 15' or 'Apollo 17'
+    all_depths : bool  If False (default) only sensors ≥ 35 cm are shown
+                       (surface probes dominated by diurnal swing).
+    figsize    : tuple
+    """
+    from lunar.hfe_loader import get_timeseries, STABLE_WINDOWS
+
+    probes  = get_timeseries(site_name)
+    windows = STABLE_WINDOWS[site_name]
+    n       = len(probes)
+
+    fig, axes = plt.subplots(n, 1, figsize=figsize, sharex=False,
+                             constrained_layout=True)
+    if n == 1:
+        axes = [axes]
+
+    _cmap = plt.cm.plasma
+
+    for ax, probe, (win_start, win_end) in zip(axes, probes, windows):
+        sensors_sorted = sorted(
+            probe.items(),
+            key=lambda kv: kv[1]['depth_cm']
+        )
+        if not all_depths:
+            sensors_sorted = [(s, d) for s, d in sensors_sorted
+                              if d['depth_cm'] >= 35]
+        if not sensors_sorted:
+            ax.set_visible(False)
+            continue
+
+        depths_cm = [d['depth_cm'] for _, d in sensors_sorted]
+        norm = Normalize(vmin=min(depths_cm), vmax=max(depths_cm))
+
+        for sensor, data in sensors_sorted:
+            d_cm  = data['depth_cm']
+            t0    = data['times'][0].timestamp() / 86400
+            t_num = np.array([t.timestamp() / 86400 for t in data['times']]) - t0
+            ax.plot(t_num, data['temps'], lw=0.9, alpha=0.85,
+                    color=_cmap(norm(d_cm)),
+                    label=f'{sensor} ({d_cm} cm)')
+
+        # Stable window
+        ax.axvspan(win_start, win_end, alpha=0.12, color='#2ECC71', zorder=0)
+        ax.axvline(win_start, color='#1E8449', ls='--', lw=1.0, alpha=0.9)
+        ax.axvline(win_end,   color='#1E8449', ls=':',  lw=0.9, alpha=0.7)
+        ax.text((win_start + win_end) / 2, ax.get_ylim()[0],
+                'Stable\nwindow', fontsize=7, color='#1E8449',
+                ha='center', va='bottom', style='italic')
+
+        # Known disturbance band — cable-pull event documented ~day 500
+        _disturbance_ranges = [(490, 520, 'Cable\ndisturbance')]
+        for d_start, d_end, label in _disturbance_ranges:
+            ax.axvspan(d_start, d_end, alpha=0.15, color='#E74C3C', zorder=0)
+            ax.text((d_start + d_end) / 2, ax.get_ylim()[1],
+                    label, fontsize=7, color='#C0392B',
+                    ha='center', va='top', style='italic')
+
+        probe_label = next(iter(probe.values()))['probe_label']
+        ax.set_title(f'{probe_label}  —  raw temperature timeseries',
+                     fontsize=11, weight='bold')
+        ax.set_xlabel('Days since emplacement', fontsize=10, weight='bold')
+        ax.set_ylabel('T (K)', fontsize=10, weight='bold')
+
+        # Compact legend (at most 8 entries)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[:8], labels[:8],
+                  loc='upper right', fontsize=8,
+                  ncol=2, framealpha=0.7)
+
+    sm = plt.cm.ScalarMappable(cmap=_cmap)
+    sm.set_array([])
+    fig.colorbar(sm, ax=axes, label='Sensor depth (cm)',
+                 orientation='vertical', shrink=0.6, pad=0.01)
+    fig.suptitle(
+        f'{site_name} HFE — Full Temperature Timeseries\n'
+        'Green = stable validation window   Pink = known disturbance',
+        fontsize=13, weight='bold')
+    return fig
