@@ -1671,13 +1671,45 @@ def hfe_shunting(site_name, n_snapshots=4, figsize=(15, 6)):
 # 7. LOCAL TERRAIN MAP  (DEM overview around target)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _compute_hillshade(elev_m, az_sun_deg=315.0, el_sun_deg=45.0):
+    """
+    Compute a hillshade (synthetic illumination) from an elevation grid.
+
+    Uses the standard gradient-based algorithm:
+      1. Compute surface normals from central-difference gradients.
+      2. Dot the normal with the solar direction vector.
+
+    Parameters
+    ----------
+    elev_m     : 2-D float array — elevation in metres
+    az_sun_deg : solar azimuth (° clockwise from N; 315 = NW illumination)
+    el_sun_deg : solar elevation above horizon (°; 45 is standard)
+
+    Returns
+    -------
+    hillshade  : 2-D float array in [0, 1] — 0 = fully shaded, 1 = fully lit
+    """
+    az_rad = np.radians(az_sun_deg)
+    el_rad = np.radians(el_sun_deg)
+
+    dy, dx = np.gradient(elev_m.astype(np.float64))
+    slope  = np.arctan(np.sqrt(dx ** 2 + dy ** 2))
+    aspect = np.arctan2(-dy, dx)  # clockwise from E → convert to CW from N below
+
+    hs = (np.cos(el_rad) * np.cos(slope)
+          + np.sin(el_rad) * np.sin(slope) * np.cos(az_rad - aspect))
+    return np.clip(hs, 0.0, 1.0).astype(np.float32)
+
+
 def dem_overview(elev_m, map_res, target_lat, target_lon,
                  window_deg=5, figsize=(14, 6)):
     """
     Show the global Moon DEM and a zoomed local terrain map around the target.
 
     Left panel  : Full Moon elevation map with target location marked.
-    Right panel : Local terrain (±window_deg) with contour lines.
+                  Both Apollo 15 and Apollo 17 landing sites are labelled.
+                  A hillshade layer improves terrain legibility.
+    Right panel : Local terrain (±window_deg) with hillshade and contour lines.
 
     Parameters
     ----------
@@ -1687,6 +1719,8 @@ def dem_overview(elev_m, map_res, target_lat, target_lon,
     target_lon  : target longitude (degrees, 0–360)
     window_deg  : half-width of the local zoom box in degrees
     """
+    from lunar.constants import APOLLO_SITES as _ASITES
+
     H, W    = elev_m.shape
     pix_deg = 1.0 / map_res
 
@@ -1698,26 +1732,56 @@ def dem_overview(elev_m, map_res, target_lat, target_lon,
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
-    # ── Left: Full Moon DEM ────────────────────────────────────────────────────
-    step    = max(1, H // 360)
-    elev_ds = elev_m[::step, ::step]
+    # ── Downsampled global DEM + hillshade ────────────────────────────────────
+    step     = max(1, H // 360)
+    elev_ds  = elev_m[::step, ::step]
+    hs_ds    = _compute_hillshade(elev_ds)
     lon_full = np.linspace(0, 360, elev_ds.shape[1])
     lat_full = np.linspace(90, -90, elev_ds.shape[0])
 
+    # ── Left: Full Moon DEM ────────────────────────────────────────────────────
     im1 = ax1.pcolormesh(lon_full, lat_full, elev_ds / 1000.0,
                          cmap='gist_earth', shading='auto',
-                         vmin=-9, vmax=10)
+                         vmin=-9, vmax=10, zorder=1)
+    # Hillshade overlay (alpha blended for terrain relief)
+    ax1.pcolormesh(lon_full, lat_full, hs_ds,
+                   cmap='gray', shading='auto',
+                   vmin=0, vmax=1, alpha=0.25, zorder=2)
     plt.colorbar(im1, ax=ax1, label='Elevation (km)', shrink=0.75)
+
+    # Target location
     ax1.plot(target_lon, target_lat, 'r*',
              markersize=14, markeredgewidth=1, markeredgecolor='white',
              label='Target', zorder=10)
+
+    # Apollo landing sites
+    _a_markers = {'Apollo 15': ('^', '#FFD700', 11),
+                  'Apollo 17': ('D',  '#00BFFF', 10)}
+    for sname, sinfo in _ASITES.items():
+        mk, clr, ms = _a_markers.get(sname, ('o', 'white', 9))
+        ax1.plot(sinfo['lon'], sinfo['lat'], mk, color=clr,
+                 markersize=ms, markeredgewidth=1.2, markeredgecolor='black',
+                 label=sname, zorder=11)
+        ax1.annotate(sname.replace('Apollo ', 'A'),
+                     xy=(sinfo['lon'], sinfo['lat']),
+                     xytext=(4, 4), textcoords='offset points',
+                     fontsize=7.5, color=clr,
+                     fontweight='bold', zorder=12)
+
+    # Gridlines
+    for _lon_g in range(0, 361, 60):
+        ax1.axvline(_lon_g, color='white', lw=0.3, alpha=0.4, zorder=3)
+    for _lat_g in range(-90, 91, 30):
+        ax1.axhline(_lat_g, color='white', lw=0.3, alpha=0.4, zorder=3)
+
     ax1.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
     ax1.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
-    ax1.set_title('Global DEM — LOLA (LRO)', fontsize=12, weight='bold')
-    ax1.legend(**_LEG_KW)
+    ax1.set_title('Global DEM — LOLA (LRO) + Apollo Sites',
+                  fontsize=12, weight='bold')
+    ax1.legend(**{**_LEG_KW, 'fontsize': 8})
     ax1.set_aspect('equal')
 
-    # ── Right: Zoomed local DEM ────────────────────────────────────────────────
+    # ── Right: Zoomed local DEM with hillshade ────────────────────────────────
     lat_min = max(-90, target_lat - window_deg)
     lat_max = min( 90, target_lat + window_deg)
     lon_min = max(  0, target_lon - window_deg)
@@ -1729,27 +1793,42 @@ def dem_overview(elev_m, map_res, target_lat, target_lon,
     c1 = min(W, int(round(lon_max / pix_deg - 0.5)) + 1)
 
     elev_local = elev_m[r0:r1, c0:c1]
+    hs_local   = _compute_hillshade(elev_local)
     lons_local = np.linspace(lon_min, lon_max, elev_local.shape[1])
     lats_local = np.linspace(lat_max, lat_min, elev_local.shape[0])
 
     im2 = ax2.pcolormesh(lons_local, lats_local, elev_local / 1000.0,
-                         cmap='gist_earth', shading='auto')
+                         cmap='gist_earth', shading='auto', zorder=1)
+    ax2.pcolormesh(lons_local, lats_local, hs_local,
+                   cmap='gray', shading='auto',
+                   vmin=0, vmax=1, alpha=0.30, zorder=2)
     plt.colorbar(im2, ax=ax2, label='Elevation (km)', shrink=0.75)
 
     cs = ax2.contour(lons_local, lats_local, elev_local / 1000.0,
-                     levels=8, colors='black', linewidths=0.4, alpha=0.4)
+                     levels=8, colors='black', linewidths=0.4, alpha=0.35)
     ax2.clabel(cs, inline=True, fontsize=7, fmt='%.1f km')
 
     ax2.plot(target_lon, target_lat, 'r*',
              markersize=16, markeredgewidth=1, markeredgecolor='white',
              label=f'{target_lat:.3f}°N, {target_lon:.3f}°E', zorder=10)
+
+    # Mark any Apollo site that falls within the zoom window
+    for sname, sinfo in _ASITES.items():
+        if (lat_min <= sinfo['lat'] <= lat_max and
+                lon_min <= sinfo['lon'] <= lon_max):
+            mk, clr, ms = _a_markers.get(sname, ('o', 'white', 9))
+            ax2.plot(sinfo['lon'], sinfo['lat'], mk, color=clr,
+                     markersize=ms, markeredgewidth=1.2, markeredgecolor='black',
+                     label=sname, zorder=11)
+
     ax2.set_xlabel('Longitude (°E)', fontsize=11, weight='bold')
     ax2.set_ylabel('Latitude (°N)', fontsize=11, weight='bold')
     ax2.set_title(f'Local Terrain  (±{window_deg}°)', fontsize=12, weight='bold')
-    ax2.legend(**_LEG_KW)
+    ax2.legend(**{**_LEG_KW, 'fontsize': 8})
     ax2.set_aspect('equal')
 
-    plt.suptitle('Digital Elevation Model', fontsize=14, weight='bold')
+    plt.suptitle('Digital Elevation Model — LOLA / LRO',
+                 fontsize=14, weight='bold')
     plt.tight_layout()
     return fig
 
