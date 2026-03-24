@@ -2946,18 +2946,26 @@ def polar_diurnal(cycles, depths_m=(0.0, 0.35, 1.0, 2.0),
 # ─────────────────────────────────────────────────────────────────────────────
 
 def borestem_correction_plot(stats, apollo_data, site_name,
-                              correction_dT, figsize=(12, 7)):
+                              correction_dT,
+                              hayne_T_model=None, hayne_correction_dT=None,
+                              figsize=(12, 7)):
     """Two-panel figure: mean T profile with borestem correction, and ΔT(z).
 
     Parameters
     ----------
-    stats         : dict with keys 'z_grid', 'T_mean_profile', 'lat', 'lon'
-    apollo_data   : dict with keys:
-                      'depths'       — array (m)
-                      'T_K'          — array (K)
-                      'sensor_types' — list of 'TG'/'TR'/'TC' (optional)
-    site_name     : '15' or '17'
-    correction_dT : array (n,) — total warm bias at each Z_GRID node (K)
+    stats              : dict with keys 'z_grid', 'T_mean_profile', 'lat', 'lon'
+    apollo_data        : dict with keys:
+                           'depths'       — array (m)
+                           'T_K'          — array (K)
+                           'sensor_types' — list of 'TG'/'TR'/'TC' (optional)
+    site_name          : '15' or '17'
+    correction_dT      : array (n,) — total warm bias at each Z_GRID node (K)
+                         for the user's (discrete-layer) model
+    hayne_T_model      : array (n,) or None — mean temperature profile from the
+                         Hayne 2017 exponential model (K).  When provided a
+                         second pair of curves is added to the plot.
+    hayne_correction_dT: array (n,) or None — borestem warm bias for the Hayne
+                         model (K).  Required when hayne_T_model is given.
     """
     z_grid  = np.asarray(stats.get('z_grid', []))
     T_model = np.asarray(stats.get('T_mean_profile', stats.get('T_mean', [])))
@@ -2973,6 +2981,15 @@ def borestem_correction_plot(stats, apollo_data, site_name,
 
     T_corrected = T_model - corr if corr.size == T_model.size else T_model.copy()
 
+    # Optional Hayne model
+    show_hayne   = (hayne_T_model is not None)
+    if show_hayne:
+        T_hay      = np.asarray(hayne_T_model)
+        corr_hay   = (np.asarray(hayne_correction_dT)
+                      if hayne_correction_dT is not None
+                      else np.zeros_like(T_hay))
+        T_hay_corr = T_hay - corr_hay if corr_hay.size == T_hay.size else T_hay.copy()
+
     site_color = _A15_COLOR if '15' in str(site_name) else _A17_COLOR
 
     fig = plt.figure(figsize=figsize)
@@ -2981,10 +2998,20 @@ def borestem_correction_plot(stats, apollo_data, site_name,
     ax2 = fig.add_subplot(gs[0, 2])    # correction ΔT panel
 
     # ── Panel 1: temperature profiles ────────────────────────────────────────
+    # User's discrete-layer model
     ax1.plot(T_model,     z_grid * 100, lw=2.5, color='#2471A3',
-             label='Model (uncorrected)', zorder=3)
-    ax1.plot(T_corrected, z_grid * 100, lw=2.5, color='#C0392B', ls='--',
-             label='Model (borestem corrected)', zorder=4)
+             label='Discrete (uncorrected)', zorder=3)
+    ax1.plot(T_corrected, z_grid * 100, lw=2.5, color='#2471A3', ls='--',
+             label='Discrete (borestem corrected)', zorder=4)
+
+    # Hayne 2017 model (if provided)
+    if show_hayne:
+        ax1.plot(T_hay,      z_grid * 100, lw=2.0, color='#E67E22',
+                 label='Hayne 2017 (uncorrected)', zorder=3)
+        ax1.plot(T_hay_corr, z_grid * 100, lw=2.0, color='#E67E22', ls='--',
+                 label='Hayne 2017 (borestem corrected)', zorder=4)
+
+    # Apollo measurements
     if a_d.size:
         _msize = {'TG': 9, 'TR': 8, 'TC': 7}
         _malph = {'TG': 1.0, 'TR': 0.75, 'TC': 0.55}
@@ -3011,14 +3038,22 @@ def borestem_correction_plot(stats, apollo_data, site_name,
 
     # ── Panel 2: correction magnitude ΔT(z) ──────────────────────────────────
     if corr.size == z_grid.size:
-        ax2.plot(corr, z_grid * 100, lw=2.5, color='#E67E22', zorder=3)
+        ax2.plot(corr, z_grid * 100, lw=2.5, color='#2471A3',
+                 label='Discrete', zorder=3)
         ax2.fill_betweenx(z_grid * 100, 0, corr,
-                          color='#E67E22', alpha=0.18, zorder=2)
+                          color='#2471A3', alpha=0.15, zorder=2)
+    if show_hayne and corr_hay.size == z_grid.size:
+        ax2.plot(corr_hay, z_grid * 100, lw=2.0, color='#E67E22',
+                 ls='--', label='Hayne 2017', zorder=3)
+        ax2.fill_betweenx(z_grid * 100, 0, corr_hay,
+                          color='#E67E22', alpha=0.12, zorder=2)
     ax2.axvline(0, color='#333', lw=0.9, ls='--')
     ax2.invert_yaxis()
     ax2.set_xlabel('Warm Bias  ΔT (K)', fontsize=11, weight='bold')
     ax2.set_title('Correction\nΔT(z)', fontsize=12, weight='bold')
     ax2.yaxis.set_ticklabels([])   # depth axis shared with ax1
+    if show_hayne:
+        ax2.legend(fontsize=8, loc='lower left')
 
     fig.suptitle(f'Borestem Fiberglass Thermal Short-Circuit — Apollo {site_name}',
                  fontsize=13, weight='bold', y=1.01)

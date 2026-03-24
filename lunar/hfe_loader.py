@@ -260,13 +260,26 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
     ------
     For each sensor, readings from the last *n_lunar_days* × 29.53 Earth days
     inside the stable window are taken.  Each timestamp is mapped to a phase
-    angle within the lunar day:
+    angle within the lunar day using a **common UTC reference** shared across
+    all probes for this site:
 
-        phase_h = (days_since_win_start  mod  29.53) × 24   [hours]
+        phase_h = (abs_unix_days − common_utc_ref)  mod  29.53 × 24   [hours]
 
-    Readings are sorted by phase and returned alongside a zero-mean temperature
-    anomaly (T − <T>), so curves from different depths can be overlaid on the
-    same axes regardless of their absolute temperature offsets.
+    Using a single common UTC reference ensures that all sensors — regardless
+    of which probe they belong to or when that probe was emplaced — are folded
+    onto the **same lunar-day phase frame** (i.e. local noon falls at the same
+    x-coordinate for every panel).  The previous per-probe epoch reference
+    introduced an inter-probe phase offset equal to the difference in emplacement
+    dates modulo the lunar period.
+
+    Phase-alignment caveat for Apollo 17
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Apollo 17 Probe 1 and Probe 2 have non-overlapping stable windows
+    (P1: days 705–853, P2: days 346–494 since emplacement, ≈ 1 year apart).
+    All sensors are still folded onto the same lunar-phase frame via the common
+    UTC reference, but the two probes sample different calendar epochs.
+    Amplitude differences between sensors from different probes therefore
+    reflect both depth-dependent damping AND any real mission-timeline changes.
 
     Parameters
     ----------
@@ -281,7 +294,7 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
                       'T_mean'  : float          — mean temperature over folded window
                       'sensor'  : str            — sensor name
                       'stype'   : str            — 'TG', 'TR', or 'TC'
-                      'ref_utc' : datetime (UTC) — UTC time at which t_phase_h = 0}}
+                      'ref_utc' : datetime (UTC) — common UTC time at phase_h = 0}}
     Multiple sensors at the same depth_cm are merged; the one with the most
     readings is kept.
     """
@@ -289,21 +302,38 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
 
     probes  = load_site(site_name)
     windows = _STABLE_WINDOWS[site_name]
-    result  = {}            # depth_cm → best entry
 
+    # ── Pass 1: determine each probe's selection window in absolute UTC days ──
+    probe_epochs = []   # (probe, all_t0, sel_start_days, sel_end_days)
     for probe, (win_start, win_end) in zip(probes, windows):
-        # Probe epoch: earliest timestamp across all sensors
         all_t0 = min(
             (data['times'][0].timestamp() / 86400
              for data in probe.values() if len(data['times']) > 0),
             default=None,
         )
         if all_t0 is None:
+            probe_epochs.append(None)
             continue
-
-        # Use the last n_lunar_days inside the stable window
         sel_end   = float(win_end)
         sel_start = max(float(win_start), sel_end - n_lunar_days * LUNAR_DAY_DAYS)
+        probe_epochs.append((probe, all_t0, sel_start, sel_end))
+
+    # Common UTC reference = earliest sel_start across all probes (absolute Unix days)
+    # This guarantees all sensors fold onto the same lunar-phase frame.
+    common_utc_ref = min(
+        all_t0 + sel_start
+        for item in probe_epochs if item is not None
+        for _, all_t0, sel_start, _ in [item]
+    )
+    ref_utc_common = datetime.datetime.utcfromtimestamp(common_utc_ref * 86400)
+
+    # ── Pass 2: phase-fold every sensor using the common reference ────────────
+    result = {}   # depth_cm → best entry
+
+    for item in probe_epochs:
+        if item is None:
+            continue
+        probe, all_t0, sel_start, sel_end = item
 
         for sensor, data in probe.items():
             d_cm  = data['depth_cm']
@@ -312,16 +342,19 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
             if len(temps) < 10:
                 continue
 
-            t_days = np.array([t.timestamp() / 86400 for t in times]) - all_t0
+            # Absolute Unix days for each reading
+            t_unix = np.array([t.timestamp() / 86400 for t in times])
+            # Selection mask uses per-probe epoch (days since emplacement)
+            t_days = t_unix - all_t0
             mask   = (t_days >= sel_start) & (t_days <= sel_end)
             if mask.sum() < 10:
                 continue
 
-            t_sel = t_days[mask]
-            T_sel = temps[mask]
+            t_unix_sel = t_unix[mask]
+            T_sel      = temps[mask]
 
-            # Phase-fold: map each timestamp to position within one lunar day
-            t_phase_h = ((t_sel - sel_start) % LUNAR_DAY_DAYS) * 24.0
+            # Phase-fold relative to the common UTC reference
+            t_phase_h = ((t_unix_sel - common_utc_ref) % LUNAR_DAY_DAYS) * 24.0
             sort_idx  = np.argsort(t_phase_h)
             t_ph      = t_phase_h[sort_idx]
             T_ph      = T_sel[sort_idx]
@@ -330,11 +363,6 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
             T_anom = T_ph - T_mean
 
             stype = ''.join(c for c in sensor if c.isalpha())[:2]
-
-            # UTC datetime at which t_phase_h = 0 for this sensor window
-            ref_utc = datetime.datetime.utcfromtimestamp(
-                (all_t0 + sel_start) * 86400
-            )
 
             # Keep the sensor with the most readings per depth
             if d_cm not in result or mask.sum() > result[d_cm]['_n']:
@@ -345,7 +373,7 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
                     'T_mean':  T_mean,
                     'sensor':  sensor,
                     'stype':   stype,
-                    'ref_utc': ref_utc,
+                    'ref_utc': ref_utc_common,   # same for all sensors
                     '_n':      int(mask.sum()),
                 }
 
