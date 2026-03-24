@@ -3532,3 +3532,88 @@ def hfe_full_timeseries(site_name, all_depths=False, figsize=(15, 10)):
         'Green = stable validation window   Pink = known disturbance',
         fontsize=13, weight='bold')
     return fig
+
+# ─────────────────────────────────────────────────────────────────────────────
+# dem_slope_aspect_map
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dem_slope_aspect_map(elev_m, map_res, target_lat, target_lon,
+                         apollo_sites=None, figsize=(16, 5)):
+    """3-panel: elevation / slope (°) / aspect (°) derived from DEM.
+
+    Parameters
+    ----------
+    elev_m       : 2-D ndarray  Elevation grid (metres).
+    map_res      : float        Grid spacing in degrees (~30 m = 0.000278°).
+    target_lat   : float        Centre latitude of the grid.
+    target_lon   : float        Centre longitude of the grid.
+    apollo_sites : list of dict, optional  Same format as dem_overview().
+    figsize      : tuple
+    """
+    if apollo_sites is None:
+        apollo_sites = [
+            dict(lat=26.132, lon=3.634,  name='A15', marker='^', color='#E74C3C'),
+            dict(lat=20.190, lon=30.772, name='A17', marker='D', color='#F39C12'),
+        ]
+
+    ny, nx = elev_m.shape
+    lats = target_lat + (np.arange(ny) - ny // 2) * map_res
+    lons = target_lon + (np.arange(nx) - nx // 2) * map_res
+
+    # Convert map_res from degrees to metres for gradient scaling
+    # 1° latitude ≈ 30 874 m on the Moon (radius 1 737.4 km)
+    _m_per_deg = np.radians(1.0) * 1_737_400.0
+    dy_m = map_res * _m_per_deg
+    dx_m = map_res * _m_per_deg * np.cos(np.radians(target_lat))
+
+    dz_dy, dz_dx = np.gradient(elev_m, dy_m, dx_m)
+    slope_deg  = np.degrees(np.arctan(np.sqrt(dz_dx**2 + dz_dy**2)))
+    aspect_deg = np.degrees(np.arctan2(-dz_dx, dz_dy)) % 360.0
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True)
+    extent = [lons[0], lons[-1], lats[0], lats[-1]]
+
+    # Panel 1 — elevation with hillshade
+    hs = _compute_hillshade(elev_m)
+    elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+    im0 = axes[0].imshow(elev_norm * 0.6 + hs * 0.4,
+                         origin='lower', cmap='gist_earth',
+                         extent=extent, aspect='auto')
+    plt.colorbar(im0, ax=axes[0], label='Terrain index', shrink=0.85)
+    axes[0].set_title('Elevation + Hillshade')
+
+    # Panel 2 — slope
+    im1 = axes[1].imshow(slope_deg, origin='lower', cmap='YlOrRd',
+                         extent=extent, aspect='auto', vmin=0, vmax=30)
+    cb1 = plt.colorbar(im1, ax=axes[1], label='Slope (°)', shrink=0.85)
+    cb1.set_ticks([0, 5, 10, 15, 20, 25, 30])
+    axes[1].set_title('Slope')
+
+    # Panel 3 — aspect (circular colormap)
+    im2 = axes[2].imshow(aspect_deg, origin='lower', cmap='hsv',
+                         extent=extent, aspect='auto', vmin=0, vmax=360)
+    cb2 = plt.colorbar(im2, ax=axes[2], label='Aspect (°)', shrink=0.85)
+    cb2.set_ticks([0, 90, 180, 270, 360])
+    cb2.set_ticklabels(['N', 'E', 'S', 'W', 'N'])
+    axes[2].set_title('Aspect')
+
+    # Overlay Apollo sites
+    for ax in axes:
+        for site in apollo_sites:
+            slat, slon = site['lat'], site['lon']
+            if lons[0] <= slon <= lons[-1] and lats[0] <= slat <= lats[-1]:
+                ax.plot(slon, slat,
+                        marker=site.get('marker', '*'),
+                        color=site.get('color', 'red'),
+                        ms=9, mec='white', mew=0.8, zorder=5)
+                ax.text(slon + map_res, slat, site.get('name', ''),
+                        fontsize=8, color='white', ha='left', va='center',
+                        zorder=5,
+                        bbox=dict(fc='black', alpha=0.4, pad=1, ec='none'))
+        ax.set_xlabel('Longitude (°)')
+        ax.set_ylabel('Latitude (°)')
+
+    fig.suptitle(
+        f'DEM Slope & Aspect  —  ({target_lat:.2f}°N, {target_lon:.2f}°E)  |  LOLA/LRO',
+        fontsize=13, weight='bold')
+    return fig
