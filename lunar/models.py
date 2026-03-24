@@ -72,10 +72,32 @@ def set_rho_surface(rho_kg_m3: float):
 #   Layer 1 : 0 → _H_LAYER1      — fluffy surface dust (ρ = 1100 kg/m³)
 #   Layer 2 : _H_LAYER1 → 20 cm  — transitional compaction (linear ramp)
 #   Layer 3 : > 20 cm            — consolidated regolith (slow ramp)
+#
+# Conductivity values:
+#   k_surface = 1.0e-3 W/m/K — unconsolidated dust; from Langseth et al. 1976
+#               (Apollo 15 & 17 HFE fit to near-surface thermal gradient)
+#   k_deep    = 1.2e-2 W/m/K — consolidated regolith at > 20 cm.
+#               Derived from the Apollo heat flow measurement itself:
+#               k = Q_basal / (dT/dz)  ≈  0.018 W/m² / 1.5 K/m  ≈  1.2e-2 W/m/K
+#               where dT/dz ≈ 1.5 K/m is the measured deep gradient (Langseth 1973).
+#
+# IMPORTANT — calibration basis differs between models:
+#   Discrete model k_deep is calibrated to Apollo HFE geothermal gradient data
+#   (steady-state heat flow at 0.3–2.3 m depth).
+#   Hayne model k_deep = 3.8e-3 is calibrated to Diviner surface brightness
+#   temperatures (diurnal skin depth, topmost ~20 cm).
+#   These represent different depth ranges and physical processes; the factor
+#   of ~3 difference between models is physically meaningful, not an error.
+#   Use the discrete model when comparing against Apollo deep-temperature data;
+#   use the Hayne model when comparing against Diviner surface observations.
 
 @njit(cache=True, fastmath=True, inline='always')
 def density_discrete(z):
-    """Density (kg/m³) for the discrete-layer model."""
+    """Density (kg/m³) for the discrete-layer model.
+
+    Based on Apollo 15 and 17 drill-core measurements (Carrier et al. 1991,
+    Lunar Sourcebook, Table 9.1).
+    """
     H     = 0.07   # Layer-1 boundary — COMPILE-TIME constant
     L2    = 0.20   # Layer-2 boundary (fixed at 20 cm)
     if z < H:
@@ -88,7 +110,13 @@ def density_discrete(z):
 
 @njit(cache=True, fastmath=True, inline='always')
 def k_solid_discrete(z):
-    """Solid (contact) thermal conductivity (W/m/K) for discrete-layer model."""
+    """Solid (contact) thermal conductivity (W/m/K) for discrete-layer model.
+
+    Surface value (1e-3) from Langseth et al. 1976 HFE analysis.
+    Deep value (1.2e-2) derived from measured Apollo heat flow Q ≈ 18–21 mW/m²
+    and observed deep temperature gradient dT/dz ≈ 1.5 K/m (Langseth 1973).
+    Calibrated to geothermal gradient data, not surface thermal inertia.
+    """
     H  = 0.07
     L2 = 0.20
     if z < H:
@@ -112,9 +140,11 @@ def k_solid_discrete(z):
 def density_hayne(z):
     """Density (kg/m³) for the Hayne 2017 exponential model (H = 7 cm fixed).
 
-    Note: H=0.07 m matches z1 (the discrete-model layer-1 depth) so that
-    both models share the same characteristic compaction depth for a fair
-    comparison.  The Hayne et al. (2017) global best-fit is H=0.06 m.
+    ρ(z) = ρ_d − (ρ_d − ρ_s) · exp(−z / H)
+    Reference: Hayne et al. 2017, JGR Planets, doi:10.1002/2017JE005387
+
+    H=0.07 m matches the discrete model's Layer-1 depth for a fair comparison;
+    the Hayne et al. (2017) global best-fit from Diviner is H=0.06 m.
     """
     rho_s = 1100.0
     rho_d = 1800.0
@@ -124,12 +154,26 @@ def density_hayne(z):
 
 @njit(cache=True, fastmath=True, inline='always')
 def k_solid_hayne(z):
-    """Solid conductivity (W/m/K) for Hayne 2017 model."""
+    """Solid conductivity (W/m/K) for Hayne 2017 model.
+
+    k_surf = 7.4e-4 W/m/K, k_deep = 3.8e-3 W/m/K from Hayne et al. 2017
+    Table 1 (fit to Diviner surface brightness temperatures, diurnal skin
+    depth regime).
+
+    CALIBRATION NOTE: these k values are fit to Diviner surface observations
+    (topmost ~20 cm, diurnal timescale) rather than to the Apollo deep
+    geothermal gradient.  The asymptotic k_deep = 3.8e-3 W/m/K implies a
+    temperature gradient dT/dz = Q_basal / k ≈ 4.7 K/m at depth, which is
+    steeper than the observed Apollo gradient (~1.5 K/m).  This reflects the
+    different calibration basis of the two models — use the discrete model for
+    geothermal comparisons and the Hayne model for surface thermal inertia
+    comparisons with Diviner data.
+    """
     rho_s = 1100.0
     rho_d = 1800.0
     H     = 0.07
     rho   = rho_d - (rho_d - rho_s) * np.exp(-z / H)
-    k_surf = 7.4e-4   # W/m/K at surface   (from Hayne et al. 2017)
+    k_surf = 7.4e-4   # W/m/K at surface   (Hayne et al. 2017, Table 1)
     k_deep = 3.8e-3   # W/m/K at ~1 m depth (Hayne et al. 2017, Table 1)
     frac   = (rho - rho_s) / (rho_d - rho_s)
     return k_surf + (k_deep - k_surf) * frac
@@ -199,10 +243,15 @@ def get_k_solid(z, model_id):
 def heat_capacity(T):
     """
     Specific heat capacity (J/kg/K) — temperature-dependent polynomial.
-    From Hemingway et al. (1973).
+
+    Reference: Hemingway et al. (1973), Lunar Sci. Conf., Table 1.
+    Valid for T ∈ [20, 420] K; positive throughout this range.
+    Returns a minimum of 10 J/kg/K as a physical guard below ~10 K.
     """
     c = np.array([-3.6125, 2.7431, 2.3616e-3, -1.234e-5, 8.9093e-9])
-    return c[0] + T * (c[1] + T * (c[2] + T * (c[3] + T * c[4])))
+    cp = c[0] + T * (c[1] + T * (c[2] + T * (c[3] + T * c[4])))
+    # Guard: polynomial can theoretically go negative below ~10 K
+    return cp if cp > 10.0 else 10.0
 
 
 @njit(cache=True, fastmath=True, inline='always')

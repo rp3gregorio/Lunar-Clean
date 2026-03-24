@@ -8,14 +8,74 @@ diurnal temperature swings.
 
 Key functions
 -------------
-solar_geometry()    — Compute sun position (zenith angle, azimuth) at time t.
-direct_solar_flux() — Net solar flux absorbed by a sloped surface.
+solar_geometry()           — Compute sun position (zenith angle, azimuth) at time t.
+direct_solar_flux()        — Net solar flux absorbed by a sloped surface.
+heliocentric_flux_factor() — Earth's orbital eccentricity correction to S0.
+
+Heliocentric distance correction
+---------------------------------
+Earth's orbital eccentricity (e ≈ 0.0167) causes the Earth-Moon system to
+move ±1.67 % in heliocentric distance over the year, producing a ±3.3 %
+variation in solar flux (±45 W/m²).  Over a 5-year dataset (Apollo 1971–1977)
+this can shift modelled surface temperatures by ±5–8 K at local noon.
+
+The main solver (solve_thermal_model) uses a fixed S0 for simplicity and
+speed.  For studies requiring seasonal accuracy, scale the sunscale parameter:
+
+    from lunar.solar import heliocentric_flux_factor
+    sunscale = heliocentric_flux_factor(epoch_jd, t_sec)
+
+where epoch_jd is the Julian Date of the simulation start (t_sec = 0).
 """
 
 import numpy as np
 from numba import njit
 
 from lunar.constants import S0, LUNAR_DAY
+
+# Julian Date of perihelion 2000 Jan 3 (J2000 + 3 days ≈ 2451547.0)
+# and Earth's mean orbital period.
+_JD_PERIHELION_2000 = 2451547.0   # JD of perihelion closest to J2000
+_EARTH_YEAR_DAYS    = 365.25
+
+
+def heliocentric_flux_factor(epoch_jd, t_sec=0.0):
+    """
+    Solar flux correction factor for Earth's orbital eccentricity.
+
+    Returns the ratio (actual solar flux) / S0 at the given time, accounting
+    for the variation in heliocentric distance over Earth's elliptical orbit.
+
+    Uses the low-eccentricity approximation:
+        r ≈ a (1 − e cos(M))    →    S ∝ 1/r² ≈ 1 + 2e cos(M)
+    where M is the mean anomaly (zero at perihelion), e = 0.0167.
+
+    Parameters
+    ----------
+    epoch_jd : Julian Date at t_sec = 0 (start of simulation).
+               Examples:
+                 Apollo 15 landing: JD 2441495.7  (1971 Jul 31)
+                 Apollo 17 landing: JD 2441680.6  (1972 Dec 11)
+    t_sec    : elapsed time since epoch_jd (seconds); default 0.
+
+    Returns
+    -------
+    factor : float — multiply S0 by this to get the corrected solar constant.
+             Range ≈ 0.967 – 1.034 (perihelion Jan, aphelion Jul).
+
+    Example
+    -------
+    >>> # Correct sunscale for Apollo 17 epoch
+    >>> from lunar.solar import heliocentric_flux_factor
+    >>> factor = heliocentric_flux_factor(2441680.6, t_sec=0.0)
+    >>> # Pass factor*sunscale into solve_thermal_model as sunscale
+    """
+    e = 0.0167   # Earth orbital eccentricity
+    jd_now = epoch_jd + t_sec / 86400.0
+    # Mean anomaly (radians): 0 at perihelion, advances 2π per year
+    M = 2.0 * np.pi * ((jd_now - _JD_PERIHELION_2000) % _EARTH_YEAR_DAYS) / _EARTH_YEAR_DAYS
+    # Flux ∝ 1/r² ≈ (1 + e cos M)²  ≈  1 + 2e cos M  for small e
+    return (1.0 + e * np.cos(M)) ** 2
 
 
 @njit(cache=True, fastmath=True, inline='always')

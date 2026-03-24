@@ -132,25 +132,40 @@ def load_ldem(search_dirs=None):
     label    : raw PDS3 metadata dict (rarely needed directly)
     """
     if search_dirs is None:
-        search_dirs = [Path('.'), Path('/mnt/project'), Path('/home/claude')]
+        # Search standard local locations only — no hard-coded environment-
+        # specific cloud paths (/mnt/project, /home/claude) that silently
+        # fail in any non-cloud environment.
+        search_dirs = [
+            Path('.'),                   # current working directory
+            Path('data'),                # data/ subfolder (common layout)
+            Path('..') / 'data',         # ../data/ (notebook one level up)
+            Path.home() / 'data',        # ~/data/
+            Path.home() / 'lunar_data',  # ~/lunar_data/
+        ]
 
-    # Prefer higher-resolution products
+    # Prefer higher-resolution products (listed from finest to coarsest)
     patterns = [
         'LDEM_512*.LBL', 'LDEM_256*.LBL', 'LDEM_128*.LBL',
         'LDEM_64*.LBL',  'LDEM_16*.LBL',  'LDEM_4*.LBL',
     ]
 
+    searched = []   # collect all examined paths for a helpful error message
     for d in search_dirs:
         if not d.exists():
             continue
+        print(f'Searching: {d.resolve()}')
         for pat in patterns:
             for lbl_path in sorted(d.glob(pat)):
-                label    = _parse_pds3_label(lbl_path)
-                ref      = label.get('__IMAGE_FILE__')
+                searched.append(str(lbl_path))
+                label = _parse_pds3_label(lbl_path)
+                ref   = label.get('__IMAGE_FILE__')
                 if not ref:
+                    print(f'  [skip] {lbl_path.name}: no ^IMAGE reference found in label')
                     continue
                 img_path = lbl_path.parent / ref
                 if not img_path.exists():
+                    print(f'  [skip] {lbl_path.name}: image file {ref!r} not found '
+                          f'in {lbl_path.parent}')
                     continue
 
                 print(f'Loading: {lbl_path.name}  ({img_path.suffix.upper()})')
@@ -181,9 +196,12 @@ def load_ldem(search_dirs=None):
 
                 return elev_m, pixel_m, map_res, label
 
+    hint = (f'\nSearched {len(searched)} label file(s): {searched}' if searched
+            else '\nNo LDEM_*.LBL files found in any search directory.')
     raise FileNotFoundError(
-        'No LDEM file found.  Place LDEM_*.LBL and LDEM_*.IMG (or .JP2) '
-        'in the same folder as this notebook.'
+        'No valid LDEM file found.  Download LDEM_*.LBL + LDEM_*.IMG (or .JP2) '
+        'from https://pds.lroc.asu.edu/data/LRO-L-LOLA-4-GDR-V1.0/ and place '
+        'them in the data/ subfolder next to this notebook.' + hint
     )
 
 

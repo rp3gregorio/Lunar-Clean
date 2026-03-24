@@ -7,6 +7,7 @@ or pick what you need:
     from lunar.constants import sigma, LUNAR_DAY, APOLLO_DATA
 """
 
+import warnings
 import numpy as np
 
 # ── Physical constants ─────────────────────────────────────────────────────────
@@ -105,7 +106,15 @@ def _load_apollo_data():
         a15 = _normalise(get_equilibrium_temps('Apollo 15'))
         a17 = _normalise(get_equilibrium_temps('Apollo 17'))
         return a15, a17
-    except Exception:
+    except Exception as exc:
+        warnings.warn(
+            f"HFE data files could not be loaded ({exc}). "
+            "Falling back to hardcoded equilibrium temperatures from Langseth 1976. "
+            "Place data/a15p*.tab and data/a17p*.tab in the project root to use "
+            "real Apollo measurements.",
+            UserWarning,
+            stacklevel=2,
+        )
         # Fallback literals: tag everything as 'TG' (conservative)
         a15 = [(d, T, 'TG') for d, T in _APOLLO_15_FALLBACK]
         a17 = [(d, T, 'TG') for d, T in _APOLLO_17_FALLBACK]

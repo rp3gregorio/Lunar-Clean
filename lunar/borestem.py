@@ -167,12 +167,30 @@ def borestem_temperature_correction(
     R_reg = np.cumsum(dz / k_reg)
     R_eff = np.cumsum(dz / k_eff)
 
-    # Estimate the surface heat flux from the near-surface temperature gradient
-    # Use the second node to avoid the numerically noisy surface node
-    if len(z_grid) > 2 and z_grid[1] > 0:
-        Q_surf = abs(k_reg[1] * (T_surf_mean - float(T_mean[1])) / z_grid[1])
+    # Estimate the downward surface heat flux driving the borestem correction.
+    # The near-surface gradient (node 0–1) is dominated by the diurnal wave
+    # and can be 10–100× larger than the quasi-steady conductive flux.  Using
+    # a deeper gradient (below the diurnal skin depth, z > 0.3 m) gives a
+    # physically correct estimate of the flux driving the steady-state bias.
+    skin_depth = 0.30   # below this, diurnal amplitude < ~1% of surface swing
+    iz_deep = 1
+    for _i in range(len(z_grid)):
+        if z_grid[_i] >= skin_depth:
+            iz_deep = _i
+            break
+    if iz_deep >= len(z_grid) - 1:
+        iz_deep = len(z_grid) // 2
+
+    if len(z_grid) > iz_deep + 1 and z_grid[iz_deep + 1] > z_grid[iz_deep]:
+        dz_deep  = z_grid[iz_deep + 1] - z_grid[iz_deep]
+        k_mid    = 0.5 * (k_reg[iz_deep] + k_reg[iz_deep + 1])
+        Q_surf   = abs(k_mid * (float(T_mean[iz_deep + 1]) - float(T_mean[iz_deep]))
+                       / dz_deep)
+        # Sanity check: Q_surf should be close to Q_basal at depth; fall back
+        # to Q_basal if the estimate is unreasonably small (< 0.1 mW/m²).
+        if Q_surf < 1e-4:
+            Q_surf = abs(Q_basal)
     else:
-        # Fallback: basal heat flux
         Q_surf = abs(Q_basal)
 
     dT_borestem = Q_surf * (R_reg - R_eff)
