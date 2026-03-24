@@ -3373,3 +3373,71 @@ def dem_hillshade_blended(elev_m, map_res, target_lat, target_lon,
         f'DEM Hillshade Analysis — ({target_lat:.2f}°N, {target_lon:.2f}°E)  |  LOLA/LRO',
         fontsize=13, weight='bold')
     return fig
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apollo_sites_overview
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apollo_sites_overview(elev_m_a15, map_res_a15,
+                          elev_m_a17, map_res_a17,
+                          a15_lat=26.132, a15_lon=3.634,
+                          a17_lat=20.190, a17_lon=30.772,
+                          radius_deg=2.0, figsize=(14, 6)):
+    """Side-by-side local terrain maps centred on Apollo 15 and 17.
+
+    Parameters
+    ----------
+    elev_m_a15 / elev_m_a17 : 2-D ndarray  Elevation grids (metres).
+    map_res_a15 / map_res_a17 : float       Grid spacing in degrees.
+    a15_lat, a15_lon         : float        Landing site coordinates.
+    a17_lat, a17_lon         : float        Landing site coordinates.
+    radius_deg               : float        Half-width of view in degrees.
+    figsize                  : tuple
+    """
+
+    def _panel(ax, elev_m, map_res, site_lat, site_lon, site_name, color):
+        ny, nx = elev_m.shape
+        lats = site_lat + (np.arange(ny) - ny // 2) * map_res
+        lons = site_lon + (np.arange(nx) - nx // 2) * map_res
+
+        hs = _compute_hillshade(elev_m)
+        elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+        blended = elev_norm * 0.55 + hs * 0.45
+
+        im = ax.imshow(blended, origin='lower', cmap='terrain',
+                       extent=[lons[0], lons[-1], lats[0], lats[-1]],
+                       aspect='auto')
+
+        # Landing-site marker
+        ax.plot(site_lon, site_lat, marker='*', color=color,
+                ms=14, mec='white', mew=0.8, zorder=5)
+        ax.text(site_lon + map_res * 1.5, site_lat,
+                f'{site_name}\n({site_lat:.3f}°N, {site_lon:.3f}°E)',
+                fontsize=8, color='white', ha='left', va='center', zorder=5,
+                bbox=dict(fc='black', alpha=0.45, pad=2, ec='none'))
+
+        # Zoom to requested radius
+        ax.set_xlim(site_lon - radius_deg, site_lon + radius_deg)
+        ax.set_ylim(site_lat - radius_deg, site_lat + radius_deg)
+
+        # Contour lines
+        try:
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            ax.contour(lon_grid, lat_grid, elev_m,
+                       levels=8, colors='white', alpha=0.25, linewidths=0.5)
+        except Exception:
+            pass
+
+        ax.set_xlabel('Longitude (°)')
+        ax.set_ylabel('Latitude (°)')
+        ax.set_title(f'Apollo {site_name[-2:]} Landing Area', weight='bold')
+        plt.colorbar(im, ax=ax, label='Terrain index', shrink=0.85, pad=0.02)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize,
+                                   constrained_layout=True)
+    _panel(ax1, elev_m_a15, map_res_a15, a15_lat, a15_lon, 'A15', '#E74C3C')
+    _panel(ax2, elev_m_a17, map_res_a17, a17_lat, a17_lon, 'A17', '#F39C12')
+
+    fig.suptitle('Apollo 15 & 17 Landing Site Terrain  |  LOLA/LRO',
+                 fontsize=13, weight='bold')
+    return fig
