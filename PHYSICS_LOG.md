@@ -61,6 +61,26 @@ Surface T_max values physically consistent with cos^(1/4) scaling from Diviner o
 - Hayne model A17 RMSE at 1.502 K — optimal for single T_surf_est; dual-model optimization needs separate APOLLO_COORDS per model
 - Flat terrain approximation used in verification; actual DEM used in notebook (minimal effect at mare sites)
 
+### [2026-03-25] — Session: Complete notebook restructuring
+
+**Physics:** All 8 sections — Apollo HFE data quality, thermal model properties, diurnal cycles, model vs Apollo comparison, borestem correction, geothermal heat flow, animations, plain-language summary
+**Status:** ✅ Done
+**Files changed:** Lunar_Thermal_Presentation.ipynb (rebuilt from scratch), _build_notebook.py (generator)
+
+**Restructuring details:**
+- Old notebook: 38 cells (streamlined from 42); contained redundant/overlapping sections
+- New notebook: 25 cells (16 code + 9 markdown); clean 8-section structure
+- All code cells pass Python syntax check (ast.parse)
+- Borestem cells: confirmed T_surf_est=250/253 K used as surface BC (not arithmetic mean ~214 K)
+- GIF cells: regenerate automatically if gifs/ files are missing or 0 bytes
+- Section structure matches user's explicit requirements from previous session
+
+**Key design decisions:**
+1. Cell 4 runs BOTH discrete and Hayne models at BOTH Apollo sites in one place — all §1-6 cells use this pre-computed data
+2. §5 borestem cells explicitly document why T_surf_est (not T_mean[0]) is correct BC
+3. §7 GIF cells check file existence + size before regenerating (idempotent)
+4. §8 plain-language summary explains physics and validation to a non-expert audience
+
 ---
 
 ## Open Questions / TODOs

@@ -45,6 +45,19 @@ Result: 42 cells → ~35 cells (remove 3, merge 2 pairs)
 - [x] Run smoke test and verify physics outputs correct
 - [x] Update PHYSICS_LOG.md ✓
 
+#### Phase 6 — Complete notebook restructuring [2026-03-25]
+- [x] Rebuild Lunar_Thermal_Presentation.ipynb (25 cells, 8 sections)
+- [x] §1 Apollo HFE data quality + equilibration plots
+- [x] §2 k(z) and density profiles
+- [x] §3 Diurnal temperature cycles + amplitude decay
+- [x] §4 Model comparison (Discrete + Hayne vs Apollo)
+- [x] §5 Borestem correction with correct T_surf_est BC
+- [x] §6 Geothermal heat flow comparison
+- [x] §7 Animated GIFs (with auto-regenerate if missing)
+- [x] §8 Plain-language summary for non-experts
+- [x] All 16 code cells pass Python syntax check
+- [x] Smoke test: imports, model validation, equilibrium profile all OK
+
 ---
 
 ### Notes
