@@ -3295,3 +3295,81 @@ def thermal_wave_annotated(T_profile, t_arr, z_grid, lat, lon,
 
     plt.tight_layout()
     return fig
+
+# ─────────────────────────────────────────────────────────────────────────────
+# dem_hillshade_blended
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dem_hillshade_blended(elev_m, map_res, target_lat, target_lon,
+                          apollo_sites=None, figsize=(16, 6)):
+    """3-panel DEM: raw elevation / hillshade / blended overlay.
+
+    Parameters
+    ----------
+    elev_m       : 2-D ndarray  Elevation grid (metres).
+    map_res      : float        Grid spacing in degrees.
+    target_lat   : float        Centre latitude of the grid.
+    target_lon   : float        Centre longitude of the grid.
+    apollo_sites : list of dict, optional
+        Each dict may have keys: lat, lon, name, marker, color.
+        Defaults to Apollo 15 & 17.
+    figsize      : tuple
+    """
+    if apollo_sites is None:
+        apollo_sites = [
+            dict(lat=26.132, lon=3.634,  name='A15', marker='^', color='#E74C3C'),
+            dict(lat=20.190, lon=30.772, name='A17', marker='D', color='#F39C12'),
+        ]
+
+    ny, nx = elev_m.shape
+    lats = target_lat + (np.arange(ny) - ny // 2) * map_res
+    lons = target_lon + (np.arange(nx) - nx // 2) * map_res
+
+    hs = _compute_hillshade(elev_m)
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize,
+                             constrained_layout=True)
+    titles = ['Elevation (m)', 'Hillshade', 'Blended']
+
+    # Panel 1 — elevation
+    im0 = axes[0].imshow(elev_m, origin='lower', cmap='gist_earth',
+                         extent=[lons[0], lons[-1], lats[0], lats[-1]],
+                         aspect='auto')
+    plt.colorbar(im0, ax=axes[0], label='Elevation (m)', shrink=0.85)
+
+    # Panel 2 — hillshade only
+    axes[1].imshow(hs, origin='lower', cmap='gray', vmin=0, vmax=1,
+                   extent=[lons[0], lons[-1], lats[0], lats[-1]],
+                   aspect='auto')
+
+    # Panel 3 — blended: elevation tinted by hillshade
+    elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+    blended = elev_norm * 0.6 + hs * 0.4
+    im2 = axes[2].imshow(blended, origin='lower', cmap='terrain',
+                         extent=[lons[0], lons[-1], lats[0], lats[-1]],
+                         aspect='auto')
+    plt.colorbar(im2, ax=axes[2], label='Blended index', shrink=0.85)
+
+    # Overlay Apollo sites on all panels
+    for ax in axes:
+        for site in apollo_sites:
+            slat, slon = site['lat'], site['lon']
+            if lons[0] <= slon <= lons[-1] and lats[0] <= slat <= lats[-1]:
+                ax.plot(slon, slat,
+                        marker=site.get('marker', '*'),
+                        color=site.get('color', 'red'),
+                        ms=9, mec='white', mew=0.8, zorder=5)
+                ax.text(slon + map_res, slat, site.get('name', ''),
+                        fontsize=8, color='white',
+                        ha='left', va='center', zorder=5,
+                        bbox=dict(fc='black', alpha=0.4, pad=1, ec='none'))
+
+    for ax, title in zip(axes, titles):
+        ax.set_title(title)
+        ax.set_xlabel('Longitude (°)')
+        ax.set_ylabel('Latitude (°)')
+
+    fig.suptitle(
+        f'DEM Hillshade Analysis — ({target_lat:.2f}°N, {target_lon:.2f}°E)  |  LOLA/LRO',
+        fontsize=13, weight='bold')
+    return fig
