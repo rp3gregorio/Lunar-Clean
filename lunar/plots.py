@@ -99,6 +99,48 @@ _MODEL_LINES = {
     'custom':            '-.',
 }
 
+
+def _align_model_to_obs(t_obs_bins, T_obs_mean, t_model, T_model, day_h):
+    """
+    Return hours to ADD to the model's time axis so its peak aligns with data.
+
+    The opposite of ``_phase_shift_xcorr``: instead of shifting Apollo times to
+    match the model clock, this shifts the MODEL clock to match real UTC Apollo
+    observations.
+
+    Parameters
+    ----------
+    t_obs_bins : array (n_bins,) — bin-centre phase hours for Apollo data
+    T_obs_mean : array (n_bins,) — binned mean anomaly (may contain NaN)
+    t_model    : array — model phase hours [0, day_h]
+    T_model    : array — model temperatures (K, not yet zero-meaned)
+    day_h      : float — hours per lunar day
+
+    Returns
+    -------
+    float — shift_h : hours to add to model time so model peak ≈ data peak.
+            Wrapped to (−day_h/2, +day_h/2).
+    """
+    n = 120
+    bins = np.linspace(0, day_h, n + 1)
+    mids = 0.5 * (bins[:-1] + bins[1:])
+
+    T_mod_grid = np.interp(mids, np.asarray(t_model) % day_h,
+                           np.asarray(T_model) - np.mean(T_model))
+
+    good = ~np.isnan(T_obs_mean)
+    if good.sum() < 4:
+        return 0.0
+    T_obs_grid = np.interp(mids, t_obs_bins[good],
+                           T_obs_mean[good] - np.nanmean(T_obs_mean[good]))
+
+    # Swap arg order vs _phase_shift_xcorr so we shift MODEL not Apollo
+    corr = np.correlate(np.tile(T_obs_grid, 2), T_mod_grid, mode='valid')[:n]
+    best_lag = int(np.argmax(corr))
+    shift = mids[best_lag]
+    return ((shift + day_h / 2) % day_h) - day_h / 2
+
+
 # ── Sensor-type marker shapes (consistent across all plots) ────────────────
 # TG = gradient-bridge thermocouple → circle
 # TR = reference thermocouple        → square
@@ -297,6 +339,34 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
         T   = np.asarray(cycles[d_key]['temperature'], dtype=float)
         return t_h, T - float(np.mean(T))
 
+    # ── Compute ONE global phase shift (model → data) from shallowest depth ─────
+    # The model's t=0 is an arbitrary simulation start; its local noon occurs at
+    # t ≈ day_h/2.  The Apollo ref_utc is a real calendar date at a different
+    # solar angle.  Cross-correlation finds the offset to add to model hours so
+    # its diurnal peak lands on the same UTC date as the data peak.
+    _global_shift_h = 0.0
+    if probe_depths_cm and cycles_model:
+        _rd   = probe_depths_cm[0]          # shallowest active depth
+        _re   = probe_diurnal[_rd]
+        _nbg  = 48
+        _edg  = np.linspace(0, day_h, _nbg + 1)
+        _mg   = 0.5 * (_edg[:-1] + _edg[1:])
+        _bidx = np.clip(np.searchsorted(_edg, _re['time_h'], side='right') - 1,
+                        0, _nbg - 1)
+        _bm   = np.full(_nbg, np.nan)
+        for _b in range(_nbg):
+            _vv = _re['T_anom'][_bidx == _b]
+            if len(_vv) >= 3:
+                _bm[_b] = np.mean(_vv)
+        _dk = _closest_model_depth(_rd / 100.0, cycles_model)
+        if _dk is not None:
+            _global_shift_h = _align_model_to_obs(
+                _mg, _bm,
+                cycles_model[_dk]['time_h'],
+                cycles_model[_dk]['temperature'],
+                day_h,
+            )
+
     _leg_seen = {}   # {label → handle} — deduplicated across panels for shared legend
 
     for ax_idx, d_cm in enumerate(probe_depths_cm):
@@ -351,23 +421,25 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                     linewidth=1.2, zorder=4,
                     label=f'Apollo {_STYPE_LABEL.get(stype, stype)}')
 
-        # ── Model 1 (user's model) ───────────────────────────────────────────
+        # ── Model 1 (user's model) — phase-shifted to align with Apollo UTC ─────
         t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
         if t1 is not None:
             if ref_utc is not None:
-                t1_utc = [ref_utc + _dt.timedelta(hours=float(h)) for h in t1]
+                _mod_ref = ref_utc + _dt.timedelta(hours=_global_shift_h)
+                t1_utc = [_mod_ref + _dt.timedelta(hours=float(h)) for h in t1]
             else:
-                t1_utc = list(t1)
+                t1_utc = [(float(h) + _global_shift_h) % day_h for h in t1]
             ax.plot(t1_utc, A1, lw=2.0, color='#2471A3', zorder=5,
                     label=model_name)
 
-        # ── Model 2 (Hayne) ──────────────────────────────────────────────────
+        # ── Model 2 (Hayne) — same global shift ──────────────────────────────
         t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
         if t2 is not None:
             if ref_utc is not None:
-                t2_utc = [ref_utc + _dt.timedelta(hours=float(h)) for h in t2]
+                _mod_ref2 = ref_utc + _dt.timedelta(hours=_global_shift_h)
+                t2_utc = [_mod_ref2 + _dt.timedelta(hours=float(h)) for h in t2]
             else:
-                t2_utc = list(t2)
+                t2_utc = [(float(h) + _global_shift_h) % day_h for h in t2]
             ax.plot(t2_utc, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
                     label=hayne_name)
 
@@ -678,16 +750,24 @@ def diurnal_absolute_vs_models(probe_diurnal, cycles_model, cycles_hayne,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def heatmap(T_profile, t_arr, z_grid, lat, lon, model_name=None,
-            depth_limit=1.5, colormap='inferno', show_contours=True,
-            figsize=(12, 6)):
+            depth_limit=1.5, zoom_depth_cm=30, colormap='inferno',
+            show_contours=True, figsize=(12, 10)):
     """
     2-D temperature field as a function of depth and time.
 
+    Two-panel figure:
+    - Top panel   : full depth (0 → depth_limit m), absolute temperature.
+    - Bottom panel: zoomed top 0–zoom_depth_cm cm with its own colour scale
+                    to reveal the thermal-wave detail that is otherwise
+                    invisible in the full-depth view.
+
     Parameters
     ----------
-    depth_limit  : only show the top *depth_limit* metres
-    colormap     : matplotlib colormap name ('inferno' is standard for T)
-    show_contours: overlay iso-temperature contour lines
+    depth_limit   : only show the top *depth_limit* metres in the main panel
+    zoom_depth_cm : depth of the zoomed bottom panel (cm); set to None to
+                    suppress the zoom panel and return a single-panel figure
+    colormap      : matplotlib colormap name ('inferno' / 'hot' / etc.)
+    show_contours : overlay iso-temperature contour lines
     """
     from lunar.constants import LUNAR_DAY
 
@@ -699,33 +779,58 @@ def heatmap(T_profile, t_arr, z_grid, lat, lon, model_name=None,
     z_cm    = z_grid[idx_z] * 100.0
     T_sub   = T_profile[np.ix_(idx_t, idx_z)]
 
-    fig, ax = plt.subplots(figsize=figsize)
+    def _draw_panel(ax, t_h, z_c, T_s, title, cbar_label):
+        """Draw a single pcolormesh panel and return the colorbar."""
+        pm = ax.pcolormesh(t_h, z_c, T_s.T,
+                           cmap=colormap, shading='gouraud',
+                           vmin=np.nanmin(T_s), vmax=np.nanmax(T_s))
+        if show_contours:
+            n_t2, n_z2 = len(t_h), len(z_c)
+            st = max(1, n_t2 // 200)
+            sz = max(1, n_z2 // 40)
+            cs = ax.contour(t_h[::st], z_c[::sz], T_s[::st, ::sz].T,
+                            levels=7, colors='white',
+                            linewidths=0.5, alpha=0.50)
+            ax.clabel(cs, inline=True, fontsize=7, fmt='%d K',
+                      use_clabeltext=True)
+        cb = plt.colorbar(pm, ax=ax, pad=0.02, fraction=0.04)
+        cb.set_label(cbar_label, fontsize=9)
+        cb.ax.tick_params(labelsize=8)
+        ax.invert_yaxis()
+        ax.set_ylabel('Depth (cm)', fontsize=10)
+        ax.set_xlim(t_h[0], t_h[-1])
+        ax.set_title(title, fontsize=10, weight='bold')
+        return cb
 
-    # pcolormesh renders crisper than contourf and avoids level-quantisation
-    pm = ax.pcolormesh(t_hours, z_cm, T_sub.T,
-                       cmap=colormap, shading='gouraud',
-                       vmin=np.nanmin(T_sub), vmax=np.nanmax(T_sub))
+    use_zoom = (zoom_depth_cm is not None)
+    if use_zoom:
+        fig, (ax_full, ax_zoom) = plt.subplots(
+            2, 1, figsize=figsize,
+            gridspec_kw={'height_ratios': [2, 1]})
+    else:
+        fig, ax_full = plt.subplots(figsize=(figsize[0], figsize[1] * 0.6))
 
-    if show_contours:
-        # Coarser grid for contours (avoid clutter)
-        n_t, n_z = len(t_hours), len(z_cm)
-        step_t = max(1, n_t // 200)
-        step_z = max(1, n_z // 80)
-        cs = ax.contour(t_hours[::step_t], z_cm[::step_z],
-                        T_sub[::step_t, ::step_z].T,
-                        levels=8, colors='white',
-                        linewidths=0.6, alpha=0.45)
-        ax.clabel(cs, inline=True, fontsize=7.5, fmt='%d K', use_clabeltext=True)
+    subtitle = _subtitle(lat, lon, model_name)
+    _draw_panel(ax_full, t_hours, z_cm, T_sub,
+                f'Subsurface Temperature — Full Depth\n{subtitle}',
+                'Temperature (K)')
+    ax_full.set_xlabel('' if use_zoom else 'Time in lunar day (hours)',
+                       fontsize=10)
 
-    cbar = plt.colorbar(pm, ax=ax, pad=0.02, fraction=0.04)
-    cbar.set_label('Temperature (K)')
-    cbar.ax.tick_params(labelsize=9)
+    if use_zoom:
+        # Zoomed slice: only the top zoom_depth_cm
+        idx_z2 = np.where(z_grid <= zoom_depth_cm / 100.0)[0]
+        z_cm2  = z_grid[idx_z2] * 100.0
+        T_sub2 = T_profile[np.ix_(idx_t, idx_z2)]
+        _draw_panel(ax_zoom, t_hours, z_cm2, T_sub2,
+                    f'Zoomed Top {zoom_depth_cm} cm  ·  Full Thermal-Wave Detail',
+                    'Temperature (K)')
+        ax_zoom.set_xlabel('Time in lunar day (hours)', fontsize=10)
+        # Shared x-axis tick labels only on bottom panel
+        plt.setp(ax_full.get_xticklabels(), visible=False)
 
-    ax.set_xlabel('Time in lunar day (hours)')
-    ax.set_ylabel('Depth (cm)')
-    ax.set_title(f'Subsurface Temperature — Depth × Time\n{_subtitle(lat, lon, model_name)}')
-    ax.invert_yaxis()
-    ax.set_xlim(t_hours[0], t_hours[-1])
+    fig.suptitle(f'Subsurface Temperature Heatmap\n{subtitle}',
+                 fontsize=11, weight='bold')
     plt.tight_layout()
     return fig
 
@@ -3035,6 +3140,19 @@ def borestem_correction_plot(stats, apollo_data, site_name,
                   f'Borestem Thermal Correction',
                   fontsize=12, weight='bold')
     ax1.legend(**_LEG_KW)
+
+    # Auto-zoom x-axis to the measurement zone so the ~1–3 K correction is visible.
+    # Use Apollo data range when available, else model range at sensor depths.
+    if a_d.size:
+        _pad = max(3.0, float(a_T.ptp()) * 0.15)
+        ax1.set_xlim(float(a_T.min()) - _pad, float(a_T.max()) + _pad)
+    else:
+        # Fall back: show region around the model profile at depths > 10 cm
+        _dz_mask = z_grid > 0.10
+        if _dz_mask.any():
+            _pad = 3.0
+            ax1.set_xlim(float(T_model[_dz_mask].min()) - _pad,
+                         float(T_model[_dz_mask].max()) + _pad)
 
     # ── Panel 2: correction magnitude ΔT(z) ──────────────────────────────────
     if corr.size == z_grid.size:
