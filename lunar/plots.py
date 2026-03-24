@@ -422,25 +422,34 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                     label=f'Apollo {_STYPE_LABEL.get(stype, stype)}')
 
         # ── Model 1 (user's model) — phase-shifted to align with Apollo UTC ─────
+        # Wrap time modulo day_h after shifting so the model stays within the
+        # same [ref_utc, ref_utc+day_h] window as the data.  Without wrapping,
+        # a large positive shift moves the model's peak outside the data window.
         t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
         if t1 is not None:
+            _t1w   = (np.asarray(t1) + _global_shift_h) % day_h
+            _s1    = np.argsort(_t1w)
+            _A1s   = np.asarray(A1)[_s1]
             if ref_utc is not None:
-                _mod_ref = ref_utc + _dt.timedelta(hours=_global_shift_h)
-                t1_utc = [_mod_ref + _dt.timedelta(hours=float(h)) for h in t1]
+                t1_utc = [ref_utc + _dt.timedelta(hours=float(h))
+                          for h in _t1w[_s1]]
             else:
-                t1_utc = [(float(h) + _global_shift_h) % day_h for h in t1]
-            ax.plot(t1_utc, A1, lw=2.0, color='#2471A3', zorder=5,
+                t1_utc = list(_t1w[_s1])
+            ax.plot(t1_utc, _A1s, lw=2.0, color='#2471A3', zorder=5,
                     label=model_name)
 
         # ── Model 2 (Hayne) — same global shift ──────────────────────────────
         t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
         if t2 is not None:
+            _t2w   = (np.asarray(t2) + _global_shift_h) % day_h
+            _s2    = np.argsort(_t2w)
+            _A2s   = np.asarray(A2)[_s2]
             if ref_utc is not None:
-                _mod_ref2 = ref_utc + _dt.timedelta(hours=_global_shift_h)
-                t2_utc = [_mod_ref2 + _dt.timedelta(hours=float(h)) for h in t2]
+                t2_utc = [ref_utc + _dt.timedelta(hours=float(h))
+                          for h in _t2w[_s2]]
             else:
-                t2_utc = [(float(h) + _global_shift_h) % day_h for h in t2]
-            ax.plot(t2_utc, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
+                t2_utc = list(_t2w[_s2])
+            ax.plot(t2_utc, _A2s, lw=2.0, color='#E67E22', ls='--', zorder=5,
                     label=hayne_name)
 
         # ── Night shading ────────────────────────────────────────────────────

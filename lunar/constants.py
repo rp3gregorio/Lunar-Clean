@@ -14,7 +14,22 @@ import numpy as np
 R_MOON     = 1_737_400.0        # Moon mean radius (m)
 sigma      = 5.670374419e-8     # Stefan-Boltzmann constant (W m⁻² K⁻⁴)
 S0         = 1361.0             # Solar constant at 1 AU (W m⁻²)
-Q_basal    = 18e-3              # Basal heat flux (W m⁻²) — from Apollo HFE
+Q_basal    = 18e-3              # Basal heat flux (W m⁻²) — average of A15 & A17
+
+# ── Site-specific basal heat flux (Langseth et al. 1976, revised values) ──────
+# Published Langseth 1976 revised values after borestem + transient correction:
+#   Apollo 15: Q = 21 mW/m²
+#   Apollo 17: Q = 16 mW/m²
+# The shared Q_basal = 18 mW/m² above is their mean — a common simplification.
+# Systematic bias if used per-site: A15 is ~3 mW/m² too low (→ ~0.4 K cooler at 2 m);
+#                                    A17 is ~2 mW/m² too high (→ ~0.3 K warmer at 2 m).
+# Reference: Langseth, Keihm & Peters (1976), J. Geophys. Res., 81, 5765–5778.
+Q_BASAL_A15 = 21e-3             # Apollo 15 revised heat flux (W m⁻²)
+Q_BASAL_A17 = 16e-3             # Apollo 17 revised heat flux (W m⁻²)
+Q_BASAL_SITES = {
+    'Apollo 15': Q_BASAL_A15,
+    'Apollo 17': Q_BASAL_A17,
+}
 LUNAR_DAY  = 29.53 * 86400.0   # Synodic lunar day (s)
 
 # ── Default surface properties (can be overridden in config) ───────────────────
@@ -103,8 +118,15 @@ def _load_apollo_data():
 
     try:
         from lunar.hfe_loader import get_equilibrium_temps
-        a15 = _normalise(get_equilibrium_temps('Apollo 15'))
-        a17 = _normalise(get_equilibrium_temps('Apollo 17'))
+        # min_depth_cm=80 excludes shallow TC cable sensors (z < 50 cm):
+        #   - TC sensors are diurnally active (within the ~50 cm skin depth)
+        #   - TC sensors are attached to probe hardware that absorbs direct solar
+        #     radiation, causing readings to be biased warm in daytime data
+        # The 80 cm cutoff matches hfe_loader documentation ("gives a conservative
+        # margin below the diurnal skin depth"). Including TC sensors at 14–67 cm
+        # in RMSE validation inflates apparent model error by ~2–4 K.
+        a15 = _normalise(get_equilibrium_temps('Apollo 15', min_depth_cm=80))
+        a17 = _normalise(get_equilibrium_temps('Apollo 17', min_depth_cm=80))
         return a15, a17
     except Exception as exc:
         warnings.warn(

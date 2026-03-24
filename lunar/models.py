@@ -213,6 +213,39 @@ MODEL_ID_MAP = {
 MODEL_NAMES = {v: k for k, v in MODEL_ID_MAP.items()}   # reverse lookup
 
 
+def validate_model_id(model_id):
+    """
+    Raise ValueError for any model_id not in MODEL_ID_MAP values (0, 1, 2).
+
+    Call this from Python code before passing model_id into @njit functions,
+    which cannot raise exceptions and silently fall through to the custom model
+    for any unrecognised integer.
+
+    Parameters
+    ----------
+    model_id : int — must be 0 (discrete), 1 (hayne_exponential), or 2 (custom)
+
+    Raises
+    ------
+    ValueError  if model_id is not in {0, 1, 2}
+    TypeError   if model_id is not an integer
+    """
+    if not isinstance(model_id, (int, np.integer)):
+        raise TypeError(
+            f"model_id must be an integer, got {type(model_id).__name__!r}. "
+            f"Use MODEL_ID_MAP['discrete'], MODEL_ID_MAP['hayne_exponential'], "
+            f"or MODEL_ID_MAP['custom'] to get the correct integer id."
+        )
+    valid = set(MODEL_ID_MAP.values())  # {0, 1, 2}
+    if model_id not in valid:
+        raise ValueError(
+            f"model_id={model_id!r} is not valid. "
+            f"Allowed values: {sorted(valid)} "
+            f"({', '.join(f'{v}={k}' for k, v in sorted(MODEL_ID_MAP.items(), key=lambda x: x[1]))}). "
+            f"Use MODEL_ID_MAP to convert a name to an id."
+        )
+
+
 @njit(cache=True, fastmath=True, inline='always')
 def get_density(z, model_id):
     """Return density (kg/m³) at depth z for the selected model."""

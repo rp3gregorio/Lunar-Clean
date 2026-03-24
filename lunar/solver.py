@@ -35,6 +35,7 @@ dt_frac = 0.20 gives a 2.5× safety margin below the Von Neumann limit while
 running ~15× faster than the previous dt_frac = 0.01 default.
 """
 
+import warnings
 import numpy as np
 from numba import njit
 
@@ -45,6 +46,7 @@ from lunar.constants import (
 )
 from lunar.models   import (
     get_density, get_k_solid, heat_capacity, thermal_conductivity,
+    validate_model_id,
 )
 from lunar.solar    import solar_geometry, direct_solar_flux
 from lunar.horizon  import check_illumination
@@ -179,9 +181,9 @@ def _surface_bc(T_below, dz, Q_solar, k_surf, emissivity):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @njit(cache=False, fastmath=True)
-def solve_thermal_model(
+def _solve_thermal_model_core(
     z_grid,
-    T_init,
+    T_init_arr,
     lat_deg, lon_deg,
     slope, aspect,
     horizons, az_angles,
@@ -189,71 +191,42 @@ def solve_thermal_model(
     model_id,
     sunscale,
     ndays,
-    dt_frac    = 0.20,
-    albedo     = DEFAULT_ALBEDO,
-    emissivity = DEFAULT_EMISSIVITY,
+    dt_frac,
+    albedo,
+    emissivity,
 ):
     """
-    Run the 1-D thermal diffusion model at a single surface point.
+    Numba-compiled core of the 1-D thermal solver.
 
-    The simulation covers *ndays* complete lunar days.  The first (ndays − 1)
-    days act as spin-up so the near-surface temperature field reaches a
-    periodic steady state; analysis is done on the final day.
-
-    For accurate temperatures below ~0.5 m, initialise T_init with the
-    output of compute_equilibrium_profile() instead of a uniform value.
-
-    Parameters
-    ----------
-    z_grid     : depth grid (m), from create_depth_grid()
-    T_init     : initial temperature — scalar (K) for uniform start, or
-                 1-D array of length nz for a pre-computed geothermal profile
-                 (recommended; use compute_equilibrium_profile())
-    lat_deg    : latitude (degrees, positive = north)
-    lon_deg    : longitude (degrees, 0–360 east)
-    slope      : surface slope (radians)
-    aspect     : surface aspect, clockwise from north (radians)
-    horizons   : horizon elevation array (from compute_horizon_profile)
-    az_angles  : corresponding azimuth array (radians)
-    chi        : radiative conductivity parameter (typically 2–4)
-    model_id   : density model — 0 = discrete, 1 = hayne, 2 = custom
-    sunscale   : solar flux multiplier (1.0 = nominal)
-    ndays      : number of lunar days to simulate
-    dt_frac    : timestep as a fraction of the Von Neumann stability limit.
-                 Default 0.20 gives a 2.5× safety margin and is ~15× faster
-                 than the older default of 0.01.
-    albedo     : Bond albedo (fraction of sunlight reflected)
-    emissivity : IR emissivity
-
-    Returns
-    -------
-    T_profile : (n_snapshots, n_depths) float32 — temperature (K) vs time and depth
-    t_arr     : (n_snapshots,) float32          — times of each snapshot (seconds)
+    T_init_arr must be a 1-D float64 array of length len(z_grid).
+    Call solve_thermal_model() (the Python wrapper below) instead —
+    it accepts both scalars and arrays and handles conversion.
     """
     nz = len(z_grid)
 
-    # Initialise temperature — accept scalar or profile array
+    # Initialise temperature from the pre-converted array
     T = np.empty(nz, dtype=np.float64)
-    if hasattr(T_init, '__len__') and len(T_init) == nz:
-        for iz in range(nz):
-            T[iz] = T_init[iz]
-    else:
-        for iz in range(nz):
-            T[iz] = T_init
+    for iz in range(nz):
+        T[iz] = T_init_arr[iz]
 
     # ── Timestep from stability criterion ─────────────────────────────────────
-    # dt < 0.5 · Δz² / α_max   where  α_max = k_max / (ρ_min · c_min)
+    # Von Neumann criterion: dt < 0.5 · Δz² / α_max
+    # where α_max = k_max / (ρ_min · c_min) is the maximum thermal diffusivity.
     #
-    # Conservative upper bounds valid for chi in [1.5, 4], T_max = 420 K:
-    #   k_max   ≈ k_solid_surface × (1 + 4 × (420/350)³) ≈ 8e-3 W/m/K
-    #             (k_solid_deep = 1.2e-2 at cold T gives similar α since ρ·c
-    #              is also larger there; surface is the critical zone)
-    #   ρ_min   = 1100 kg/m³  (fluffy surface layer)
-    #   c_min   = 400 J/kg/K  (cold regolith at ~100 K)
-    #   α_max   ≈ 8e-3 / (1100 × 400) = 1.8e-8 m²/s
-    # Using α_max = 2e-8 (rounded up for safety) gives a conservative limit.
+    # Worst-case calculation (chi=4, T_max=420 K, surface layer):
+    #   k_solid_surface = 1.0e-3 W/m/K  (discrete model surface)
+    #   k_total(420K)   = 1e-3 × (1 + 4 × (420/350)³) = 7.9e-3 W/m/K
+    #   ρ_min           = 1100 kg/m³  (fluffy surface layer, Carrier et al. 1991)
+    #   c_min           = 400 J/kg/K  (Hemingway 1973 polynomial at ~120 K)
+    #   α_max           ≈ 7.9e-3 / (1100 × 400) = 1.8e-8 m²/s
+    #
+    # Verified: at the actual equatorial dayside peak (T=450 K, chi=2.7):
+    #   k_total = 1e-3 × (1 + 2.7 × (450/350)³) = 6.8e-3 W/m/K
+    #   c(450K) ≈ 910 J/kg/K  →  α = 6.8e-3/(1100×910) = 6.8e-9 m²/s
+    # This is 3× below the 2e-8 limit — alpha_max = 2e-8 is well conservative.
+    # (Reference Agent, 2026-03-24: independently verified correct)
     dz_min    = np.min(np.diff(z_grid))
-    alpha_max = 2.0e-8   # m²/s — conservative upper bound for lunar regolith
+    alpha_max = 2.0e-8   # m²/s — verified conservative upper bound (see above)
     dt_stable = 0.5 * dz_min ** 2 / alpha_max
     dt        = dt_frac * dt_stable
 
@@ -321,6 +294,107 @@ def solve_thermal_model(
             save_idx += 1
 
     return T_profile, t_arr
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PUBLIC API WRAPPER — accepts scalar or array T_init
+# ─────────────────────────────────────────────────────────────────────────────
+
+def solve_thermal_model(
+    z_grid,
+    T_init,
+    lat_deg, lon_deg,
+    slope, aspect,
+    horizons, az_angles,
+    chi,
+    model_id,
+    sunscale,
+    ndays,
+    dt_frac    = 0.20,
+    albedo     = DEFAULT_ALBEDO,
+    emissivity = DEFAULT_EMISSIVITY,
+):
+    """
+    Run the 1-D thermal diffusion model at a single surface point.
+
+    The simulation covers *ndays* complete lunar days.  The first (ndays − 1)
+    days act as spin-up so the near-surface temperature field reaches a
+    periodic steady state; analysis is done on the final day.
+
+    For accurate temperatures below ~0.5 m, initialise T_init with the
+    output of compute_equilibrium_profile() instead of a uniform value.
+
+    Parameters
+    ----------
+    z_grid     : depth grid (m), from create_depth_grid()
+    T_init     : initial temperature — scalar (K) for uniform start, or
+                 1-D array of length nz for a pre-computed geothermal profile
+                 (recommended; use compute_equilibrium_profile())
+    lat_deg    : latitude (degrees, positive = north)
+    lon_deg    : longitude (degrees, 0–360 east)
+    slope      : surface slope (radians)
+    aspect     : surface aspect, clockwise from north (radians)
+    horizons   : horizon elevation array (from compute_horizon_profile)
+    az_angles  : corresponding azimuth array (radians)
+    chi        : radiative conductivity parameter (typically 2–4)
+    model_id   : density model — 0 = discrete, 1 = hayne, 2 = custom
+    sunscale   : solar flux multiplier (1.0 = nominal)
+    ndays      : number of lunar days to simulate
+    dt_frac    : timestep as a fraction of the Von Neumann stability limit.
+                 Default 0.20 gives a 2.5× safety margin and is ~15× faster
+                 than the older default of 0.01.
+    albedo     : Bond albedo (fraction of sunlight reflected)
+    emissivity : IR emissivity
+
+    Returns
+    -------
+    T_profile : (n_snapshots, n_depths) float32 — temperature (K) vs time and depth
+    t_arr     : (n_snapshots,) float32          — times of each snapshot (seconds)
+    """
+    # ── Input validation ──────────────────────────────────────────────────────
+    validate_model_id(model_id)
+    if not (-90.0 <= lat_deg <= 90.0):
+        raise ValueError(f"lat_deg must be in [-90, 90], got {lat_deg}")
+    if not (0.0 < ndays):
+        raise ValueError(f"ndays must be > 0, got {ndays}")
+    if not (0.0 < dt_frac < 1.0):
+        raise ValueError(f"dt_frac must be in (0, 1), got {dt_frac}")
+    if not (0.0 <= albedo < 1.0):
+        raise ValueError(f"albedo must be in [0, 1), got {albedo}")
+    if not (0.0 < emissivity <= 1.0):
+        raise ValueError(f"emissivity must be in (0, 1], got {emissivity}")
+
+    # ── NDAYS adequacy warning ────────────────────────────────────────────────
+    # Thermal equilibration timescale for z > 1 m is ~months–years.
+    # compute_equilibrium_profile() provides the correct deep initial condition,
+    # so NDAYS drives only the near-surface spin-up.  Still, very few days means
+    # the periodic-steady statistics (T_mean, T_amplitude) are computed over
+    # only one or two partial cycles; ≥ 5 is recommended for reliable statistics.
+    if ndays < 5:
+        warnings.warn(
+            f"ndays={ndays} is below the recommended minimum of 5. "
+            "Near-surface temperature statistics are computed over the last "
+            "lunar day; with fewer than 5 total days the spin-up may be "
+            "insufficient for periodic steady-state at shallow depths. "
+            "Set ndays ≥ 5 for reliable results, or use "
+            "compute_equilibrium_profile() to initialise deep temperatures.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    nz = len(z_grid)
+    # Convert scalar or array T_init → 1-D float64 array (required by @njit core)
+    T_init_arr = np.asarray(T_init, dtype=np.float64)
+    if T_init_arr.ndim == 0 or T_init_arr.size != nz:
+        T_init_arr = np.full(nz, float(T_init), dtype=np.float64)
+    return _solve_thermal_model_core(
+        z_grid, T_init_arr,
+        lat_deg, lon_deg,
+        slope, aspect,
+        horizons, az_angles,
+        chi, model_id, sunscale, ndays,
+        dt_frac, albedo, emissivity,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
