@@ -98,18 +98,20 @@ def _build_r_grid() -> np.ndarray:
 
 def _build_k2d(r_grid: np.ndarray,
                z_grid: np.ndarray,
-               k_1d:   np.ndarray) -> np.ndarray:
+               k_1d:   np.ndarray,
+               borestem_depth_m: float = BORESTEM_DEPTH_M) -> np.ndarray:
     """
     Assemble k[n_z, n_r] from the 1-D conductivity profile and borestem geometry.
 
-    Inside the fiberglass wall (r_i ≤ r ≤ r_o, z ≤ BORESTEM_DEPTH_M) the
+    Inside the fiberglass wall (r_i <= r <= r_o, z <= borestem_depth_m) the
     conductivity is K_FIBERGLASS; everywhere else it equals k_1d(z).
 
     Parameters
     ----------
-    r_grid  : (n_r,) radial node positions (m)
-    z_grid  : (n_z,) depth node positions  (m)
-    k_1d    : (n_z,) 1-D conductivity profile from the thermal model (W/m/K)
+    r_grid           : (n_r,) radial node positions (m)
+    z_grid           : (n_z,) depth node positions  (m)
+    k_1d             : (n_z,) 1-D conductivity profile from the thermal model (W/m/K)
+    borestem_depth_m : actual borehole depth (m); A15=1.62 m, A17=2.36 m
 
     Returns
     -------
@@ -123,7 +125,7 @@ def _build_k2d(r_grid: np.ndarray,
 
     # Overwrite the fiberglass wall region
     j_wall = np.where((r_grid >= r_i - 1e-9) & (r_grid <= r_o + 1e-9))[0]
-    i_bore = np.where(z_grid <= BORESTEM_DEPTH_M + 1e-9)[0]
+    i_bore = np.where(z_grid <= borestem_depth_m + 1e-9)[0]
     k2d[np.ix_(i_bore, j_wall)] = K_FIBERGLASS
 
     return k2d
@@ -258,20 +260,22 @@ def _assemble(r_grid:      np.ndarray,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def solve_borestem_2d_steady(
-    z_grid:      np.ndarray,
-    T_mean:      np.ndarray,
-    k_1d:        np.ndarray,
-    T_surf_mean: float,
+    z_grid:          np.ndarray,
+    T_mean:          np.ndarray,
+    k_1d:            np.ndarray,
+    T_surf_mean:     float,
+    borestem_depth_m: float = BORESTEM_DEPTH_M,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Solve the 2-D axisymmetric steady-state heat equation for the borestem.
 
     Parameters
     ----------
-    z_grid      : (n_z,) depth array in metres, monotonically increasing from 0
-    T_mean      : (n_z,) time-mean temperature profile from the 1-D solver (K)
-    k_1d        : (n_z,) thermal conductivity evaluated at T_mean (W/m/K)
-    T_surf_mean : mean surface temperature (K)  [= T_mean[0] in most cases]
+    z_grid           : (n_z,) depth array in metres, monotonically increasing from 0
+    T_mean           : (n_z,) time-mean temperature profile from the 1-D solver (K)
+    k_1d             : (n_z,) thermal conductivity evaluated at T_mean (W/m/K)
+    T_surf_mean      : mean surface temperature (K)  [= T_mean[0] in most cases]
+    borestem_depth_m : actual borehole depth (m); A15=1.62 m, A17=2.36 m
 
     Returns
     -------
@@ -279,7 +283,7 @@ def solve_borestem_2d_steady(
              This is the temperature the sensor would read.
     dT_bs  : (n_z,) warm bias  T_axis − T_mean  (K)
              Positive values mean the sensor reads warmer than undisturbed regolith.
-             Zero below BORESTEM_DEPTH_M (no casing there).
+             Zero below borestem_depth_m (no casing there).
     T_2d   : (n_z, n_r) full 2-D temperature field (K)
     r_grid : (n_r,) radial grid used (m)
 
@@ -297,7 +301,7 @@ def solve_borestem_2d_steady(
     k_1d    = np.asarray(k_1d,    dtype=np.float64)
 
     r_grid = _build_r_grid()
-    k2d    = _build_k2d(r_grid, z_grid, k_1d)
+    k2d    = _build_k2d(r_grid, z_grid, k_1d, borestem_depth_m)
     A, b   = _assemble(r_grid, z_grid, k2d, float(T_surf_mean), T_mean)
 
     T_vec = spsolve(A, b)
@@ -308,16 +312,17 @@ def solve_borestem_2d_steady(
 
     dT_bs = T_axis - T_mean
     # Below the borestem there is no casing; zero-out any numerical noise
-    dT_bs[z_grid > BORESTEM_DEPTH_M] = 0.0
+    dT_bs[z_grid > borestem_depth_m] = 0.0
 
     return T_axis, dT_bs, T_2d, r_grid
 
 
 def borestem_2d_correction(
-    z_grid:      np.ndarray,
-    T_mean:      np.ndarray,
-    k_1d:        np.ndarray,
-    T_surf_mean: float,
+    z_grid:          np.ndarray,
+    T_mean:          np.ndarray,
+    k_1d:            np.ndarray,
+    T_surf_mean:     float,
+    borestem_depth_m: float = BORESTEM_DEPTH_M,
 ) -> np.ndarray:
     """
     Convenience wrapper — returns only ΔT_bs(z) for apply_all_corrections().
@@ -325,10 +330,12 @@ def borestem_2d_correction(
     Parameters
     ----------
     z_grid, T_mean, k_1d, T_surf_mean  — same as solve_borestem_2d_steady()
+    borestem_depth_m : actual borehole depth (m); A15=1.62 m, A17=2.36 m
 
     Returns
     -------
     dT_bs : (n_z,) K — positive = sensor reads warmer than undisturbed regolith
     """
-    _, dT_bs, _, _ = solve_borestem_2d_steady(z_grid, T_mean, k_1d, T_surf_mean)
+    _, dT_bs, _, _ = solve_borestem_2d_steady(z_grid, T_mean, k_1d, T_surf_mean,
+                                               borestem_depth_m)
     return dT_bs

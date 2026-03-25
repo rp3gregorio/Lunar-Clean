@@ -64,15 +64,15 @@ Bottom BC: constant basal heat flux Q_basal (Langseth 1976).
 # CELL 1 — Imports
 # ─────────────────────────────────────────────────────────────────────────────
 C1 = code_cell("""\
-import shutil as _shutil, os as _os
-_pycache = _os.path.join('lunar', '__pycache__')
-if _os.path.isdir(_pycache):
-    _shutil.rmtree(_pycache)  # clear numba disk cache
+import shutil, os
+_pycache = os.path.join('lunar', '__pycache__')
+if os.path.isdir(_pycache):
+    shutil.rmtree(_pycache)  # clear numba disk cache
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import os, time, warnings
+import time, warnings
 %matplotlib inline
 
 import importlib
@@ -590,10 +590,10 @@ _Qs15 = borestem.mean_daytime_solar_flux(
 
 _, _corr15d = borestem.apply_all_corrections(
     _s15d['stats']['T_mean'], Z_GRID, _s15d['k_profile'], _Ts15, _Qs15,
-    use_2d_borestem=_HAS_BORESTEM2D)
+    borestem_depth_m=1.62, use_2d_borestem=_HAS_BORESTEM2D)
 _, _corr15h = borestem.apply_all_corrections(
     _s15h['stats']['T_mean'], Z_GRID, _s15h['k_profile'], _Ts15, _Qs15,
-    use_2d_borestem=_HAS_BORESTEM2D)
+    borestem_depth_m=1.62, use_2d_borestem=_HAS_BORESTEM2D)
 
 _err15 = _s15d['errors']
 _adat15 = {
@@ -636,10 +636,10 @@ _Qs17 = borestem.mean_daytime_solar_flux(
 
 _, _corr17d = borestem.apply_all_corrections(
     _s17d['stats']['T_mean'], Z_GRID, _s17d['k_profile'], _Ts17, _Qs17,
-    use_2d_borestem=_HAS_BORESTEM2D)
+    borestem_depth_m=2.36, use_2d_borestem=_HAS_BORESTEM2D)
 _, _corr17h = borestem.apply_all_corrections(
     _s17h['stats']['T_mean'], Z_GRID, _s17h['k_profile'], _Ts17, _Qs17,
-    use_2d_borestem=_HAS_BORESTEM2D)
+    borestem_depth_m=2.36, use_2d_borestem=_HAS_BORESTEM2D)
 
 _err17 = _s17d['errors']
 _adat17 = {

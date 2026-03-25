@@ -58,7 +58,9 @@ FRESH_HIGHLAND_ALBEDO = 0.15   # Very fresh highland material (crater rays, etc.
 BORESTEM_OUTER_RADIUS_M  = 0.0125   # 2.5 cm outer diameter → 1.25 cm radius
 BORESTEM_WALL_M          = 0.003    # ~3 mm fiberglass wall thickness
 K_FIBERGLASS             = 0.04     # W/m/K — typical E-glass / epoxy composite
-BORESTEM_DEPTH_M         = 2.5      # Depth of fiberglass casing (m)
+BORESTEM_DEPTH_A15_M     = 1.62     # Actual A15 borehole depth (m) — Langseth 1976
+BORESTEM_DEPTH_A17_M     = 2.36     # Actual A17 borehole depth (m) — Langseth 1976
+BORESTEM_DEPTH_M         = 2.36     # Default: use A17 (deepest); override per site
 BORESTEM_DISTURBED_RADIUS = 0.05    # Radius of mechanically disturbed zone (m)
 
 # ── Probe-top solar radiation constants ────────────────────────────────────────

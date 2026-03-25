@@ -112,19 +112,27 @@ def density_discrete(z):
 def k_solid_discrete(z):
     """Solid (contact) thermal conductivity (W/m/K) for discrete-layer model.
 
-    Surface value (1e-3) from Langseth et al. 1976 HFE analysis.
-    Deep value (1.2e-2) derived from measured Apollo heat flow Q ≈ 18–21 mW/m²
-    and observed deep temperature gradient dT/dz ≈ 1.5 K/m (Langseth 1973).
-    Calibrated to geothermal gradient data, not surface thermal inertia.
+    Surface value (1e-3 W/m/K) from Langseth et al. 1976 HFE analysis.
+
+    Deep value calibration:
+      Langseth et al. 1976 measured Q_A15 = 21 mW/m² at gradient 1.7 K/m
+      and Q_A17 = 16 mW/m² at gradient 1.24 K/m, giving
+        k_total(A15) = 21e-3 / 1.7  = 12.35 mW/m/K
+        k_total(A17) = 16e-3 / 1.24 = 12.90 mW/m/K
+      at probe depth T ≈ 252 K where chi_factor = 1 + 2.7*(252/350)^3 ≈ 2.008.
+      Therefore k_solid = k_total / chi_factor ≈ 12.6 / 2.008 ≈ 6.3e-3 W/m/K.
+      Storing k_total (1.2e-2) as k_solid was a bug: it double-counted the
+      chi factor, producing k_total = 24 mW/m/K (2x too high) and a deep
+      geothermal gradient of 0.75 K/m instead of the observed ~1.5 K/m.
     """
     H  = 0.07
     L2 = 0.20
     if z < H:
         return 1.0e-3
     elif z < L2:
-        return 1.0e-3 + (1.0e-2 - 1.0e-3) * (z - H) / (L2 - H)
+        return 1.0e-3 + (6.3e-3 - 1.0e-3) * (z - H) / (L2 - H)
     else:
-        return 1.2e-2
+        return 6.3e-3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,6 +361,6 @@ def k_solid_discrete_py(z, H=None):
     if z < h:
         return 1.0e-3
     elif z < L2:
-        return 1.0e-3 + (1.0e-2 - 1.0e-3) * (z - h) / (L2 - h)
+        return 1.0e-3 + (6.3e-3 - 1.0e-3) * (z - h) / (L2 - h)
     else:
-        return 1.2e-2
+        return 6.3e-3

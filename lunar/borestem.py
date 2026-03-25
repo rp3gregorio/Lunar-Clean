@@ -91,7 +91,8 @@ def borestem_area_fraction() -> float:
 # BORESTEM EFFECTIVE CONDUCTIVITY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def borestem_k_effective(k_regolith: np.ndarray, z_grid: np.ndarray) -> np.ndarray:
+def borestem_k_effective(k_regolith: np.ndarray, z_grid: np.ndarray,
+                         borestem_depth_m: float = BORESTEM_DEPTH_M) -> np.ndarray:
     """
     Effective thermal conductivity of the borestem-disturbed column (W/m/K).
 
@@ -101,12 +102,13 @@ def borestem_k_effective(k_regolith: np.ndarray, z_grid: np.ndarray) -> np.ndarr
 
     where f = A_fiberglass / A_disturbed_total (area fraction, ~0.013).
 
-    Below BORESTEM_DEPTH_M the conductivity reverts to undisturbed regolith.
+    Below borestem_depth_m the conductivity reverts to undisturbed regolith.
 
     Parameters
     ----------
-    k_regolith : array (n_depths,) — regolith k at each grid depth (W/m/K)
-    z_grid     : array (n_depths,) — depths (m)
+    k_regolith       : array (n_depths,) — regolith k at each grid depth (W/m/K)
+    z_grid           : array (n_depths,) — depths (m)
+    borestem_depth_m : float — actual borehole depth (m); A15=1.62, A17=2.36
 
     Returns
     -------
@@ -117,7 +119,7 @@ def borestem_k_effective(k_regolith: np.ndarray, z_grid: np.ndarray) -> np.ndarr
     k_eff = k_reg * (1.0 - f) + K_FIBERGLASS * f
 
     # Beyond borestem depth, revert to undisturbed regolith
-    below = z_grid > BORESTEM_DEPTH_M
+    below = z_grid > borestem_depth_m
     k_eff[below] = k_reg[below]
 
     return k_eff
@@ -132,6 +134,7 @@ def borestem_temperature_correction(
     T_mean: np.ndarray,
     k_profile: np.ndarray,
     T_surf_mean: float,
+    borestem_depth_m: float = BORESTEM_DEPTH_M,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Estimate the steady-state temperature offset caused by the fiberglass borestem.
@@ -160,7 +163,7 @@ def borestem_temperature_correction(
     k_eff       : array (n,) — effective borestem conductivity (W/m/K)
     """
     k_reg = np.asarray(k_profile, dtype=float)
-    k_eff = borestem_k_effective(k_reg, z_grid)
+    k_eff = borestem_k_effective(k_reg, z_grid, borestem_depth_m)
 
     # Cumulative thermal resistance (K/W · m²) from surface to each depth
     dz   = np.gradient(z_grid)
@@ -196,7 +199,7 @@ def borestem_temperature_correction(
     dT_borestem = Q_surf * (R_reg - R_eff)
 
     # Zero-out below borestem depth (no casing there)
-    dT_borestem[z_grid > BORESTEM_DEPTH_M] = 0.0
+    dT_borestem[z_grid > borestem_depth_m] = 0.0
 
     return dT_borestem, k_eff
 
@@ -302,7 +305,7 @@ def apply_all_corrections(
     Q_solar_mean: float,
     apply_borestem: bool = True,
     apply_probe_top: bool = True,
-    probe_length_m: float = 2.5,
+    borestem_depth_m: float = BORESTEM_DEPTH_M,
     use_2d_borestem: bool = True,
 ) -> tuple[np.ndarray, dict]:
     """
@@ -317,7 +320,7 @@ def apply_all_corrections(
     Q_solar_mean     : float — mean absorbed solar flux (W/m²)  [daytime average]
     apply_borestem   : if True, include fiberglass borestem correction
     apply_probe_top  : if True, include probe-top solar radiation correction
-    probe_length_m   : length of probe for taper calculation (m)
+    borestem_depth_m : actual borehole depth (m); A15=1.62 m, A17=2.36 m
     use_2d_borestem  : if True (default), use the physically correct 2-D
                        axisymmetric FD solver (borestem2d); if False, fall back
                        to the faster 1-D parallel-composite approximation.
@@ -339,11 +342,12 @@ def apply_all_corrections(
     if apply_borestem:
         if use_2d_borestem:
             from lunar.borestem2d import borestem_2d_correction
-            dT_bs = borestem_2d_correction(z_grid, T_mean, k_profile, T_surf_mean)
+            dT_bs = borestem_2d_correction(z_grid, T_mean, k_profile, T_surf_mean,
+                                           borestem_depth_m=borestem_depth_m)
             method = '2d_cylindrical'
         else:
             dT_bs, k_eff_out = borestem_temperature_correction(
-                z_grid, T_mean, k_profile, T_surf_mean
+                z_grid, T_mean, k_profile, T_surf_mean, borestem_depth_m
             )
             method = '1d_composite'
         T_corr += dT_bs
@@ -352,7 +356,7 @@ def apply_all_corrections(
         method = 'none'
 
     if apply_probe_top:
-        dT_pt = probe_top_correction_profile(Q_solar_mean, z_grid, probe_length_m)
+        dT_pt = probe_top_correction_profile(Q_solar_mean, z_grid, borestem_depth_m)
         T_corr += dT_pt
     else:
         dT_pt = zeros.copy()

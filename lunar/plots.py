@@ -953,7 +953,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
-                           figsize=(15, 11)):
+                           figsize=(15, 11), max_depth_cm=None):
     """
     Show both Apollo 15 and Apollo 17 validation side-by-side in one figure.
 
@@ -995,7 +995,10 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
 
         # ── Depth axis: zoom to include shallowest sensor at top ─────────────
         max_meas_cm = float(np.max(a_depths * 100))
-        y_max_cm    = min(320.0, max(160.0, max_meas_cm * 1.55))
+        if max_depth_cm is not None:
+            y_max_cm = float(max_depth_cm)
+        else:
+            y_max_cm = min(320.0, max(160.0, max_meas_cm * 1.55))
 
         # ─────────────────────────────────────────────────────────────────────
         # Row 0: temperature profile panel
