@@ -15,7 +15,8 @@ run_batch()              — Process a list of locations, return summary table.
 import time
 import numpy as np
 
-from lunar.constants import LUNAR_DAY, APOLLO_DATA, APOLLO_SITES, DEFAULT_ALBEDO, DEFAULT_EMISSIVITY
+from lunar.constants  import LUNAR_DAY, APOLLO_DATA, APOLLO_SITES, DEFAULT_ALBEDO, DEFAULT_EMISSIVITY
+from lunar.hfe_loader import STABLE_WINDOWS, DISCREPANCY_REGIONS
 from lunar.dem       import extract_point, latlon_to_pixel, compute_slope_aspect
 from lunar.horizon   import compute_horizon_profile, compute_sky_view_factor
 from lunar.solver    import solve_thermal_model, create_depth_grid, solve_with_h
@@ -138,13 +139,19 @@ def compute_apollo_errors(model_T_mean, z_grid, site_name):
     residuals   = m_at_apollo - a_temps
 
     return {
-        'rmse':          float(np.sqrt(np.mean(residuals ** 2))),
-        'bias':          float(np.mean(residuals)),
-        'mae':           float(np.mean(np.abs(residuals))),
-        'residuals':     residuals,
-        'apollo_depths': a_depths,
-        'apollo_temps':  a_temps,
-        'model_at_apollo': m_at_apollo,
+        'rmse':                float(np.sqrt(np.mean(residuals ** 2))),
+        'bias':                float(np.mean(residuals)),
+        'mae':                 float(np.mean(np.abs(residuals))),
+        'residuals':           residuals,
+        'apollo_depths':       a_depths,
+        'apollo_temps':        a_temps,
+        'apollo_sensor_types': apollo.get('sensor_types',
+                                          ['TG'] * len(a_depths)),
+        'model_at_apollo':     m_at_apollo,
+        # Stable windows and discrepancy regions bundled here so that
+        # plots.py never needs to import from hfe_loader directly.
+        'stable_windows':      STABLE_WINDOWS.get(site_name, []),
+        'discrepancy_regions': DISCREPANCY_REGIONS.get(site_name, {}),
     }
 
 
