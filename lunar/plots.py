@@ -24,10 +24,14 @@ amplitude_decay()          — Diurnal amplitude vs depth + skin-depth fit.
 combined_heat_flow()       — A15 vs A17 heat-flow bar chart summary.
 """
 
+import calendar
+import datetime
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
+import matplotlib.dates as mdates
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 
@@ -422,25 +426,34 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                     label=f'Apollo {_STYPE_LABEL.get(stype, stype)}')
 
         # ── Model 1 (user's model) — phase-shifted to align with Apollo UTC ─────
+        # Wrap time modulo day_h after shifting so the model stays within the
+        # same [ref_utc, ref_utc+day_h] window as the data.  Without wrapping,
+        # a large positive shift moves the model's peak outside the data window.
         t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
         if t1 is not None:
+            _t1w   = (np.asarray(t1) + _global_shift_h) % day_h
+            _s1    = np.argsort(_t1w)
+            _A1s   = np.asarray(A1)[_s1]
             if ref_utc is not None:
-                _mod_ref = ref_utc + _dt.timedelta(hours=_global_shift_h)
-                t1_utc = [_mod_ref + _dt.timedelta(hours=float(h)) for h in t1]
+                t1_utc = [ref_utc + _dt.timedelta(hours=float(h))
+                          for h in _t1w[_s1]]
             else:
-                t1_utc = [(float(h) + _global_shift_h) % day_h for h in t1]
-            ax.plot(t1_utc, A1, lw=2.0, color='#2471A3', zorder=5,
+                t1_utc = list(_t1w[_s1])
+            ax.plot(t1_utc, _A1s, lw=2.0, color='#2471A3', zorder=5,
                     label=model_name)
 
         # ── Model 2 (Hayne) — same global shift ──────────────────────────────
         t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
         if t2 is not None:
+            _t2w   = (np.asarray(t2) + _global_shift_h) % day_h
+            _s2    = np.argsort(_t2w)
+            _A2s   = np.asarray(A2)[_s2]
             if ref_utc is not None:
-                _mod_ref2 = ref_utc + _dt.timedelta(hours=_global_shift_h)
-                t2_utc = [_mod_ref2 + _dt.timedelta(hours=float(h)) for h in t2]
+                t2_utc = [ref_utc + _dt.timedelta(hours=float(h))
+                          for h in _t2w[_s2]]
             else:
-                t2_utc = [(float(h) + _global_shift_h) % day_h for h in t2]
-            ax.plot(t2_utc, A2, lw=2.0, color='#E67E22', ls='--', zorder=5,
+                t2_utc = list(_t2w[_s2])
+            ax.plot(t2_utc, _A2s, lw=2.0, color='#E67E22', ls='--', zorder=5,
                     label=hayne_name)
 
         # ── Night shading ────────────────────────────────────────────────────
@@ -944,7 +957,7 @@ def apollo_comparison(stats, errors, site_name, model_name,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
-                           figsize=(15, 11)):
+                           figsize=(15, 11), max_depth_cm=None):
     """
     Show both Apollo 15 and Apollo 17 validation side-by-side in one figure.
 
@@ -986,7 +999,10 @@ def dual_apollo_comparison(apollo_results, model_name, sunscale, chi, albedo,
 
         # ── Depth axis: zoom to include shallowest sensor at top ─────────────
         max_meas_cm = float(np.max(a_depths * 100))
-        y_max_cm    = min(320.0, max(160.0, max_meas_cm * 1.55))
+        if max_depth_cm is not None:
+            y_max_cm = float(max_depth_cm)
+        else:
+            y_max_cm = min(320.0, max(160.0, max_meas_cm * 1.55))
 
         # ─────────────────────────────────────────────────────────────────────
         # Row 0: temperature profile panel
@@ -3769,4 +3785,745 @@ def dem_slope_aspect_map(elev_m, map_res, target_lat, target_lon,
     fig.suptitle(
         f'DEM Slope & Aspect  —  ({target_lat:.2f}°N, {target_lon:.2f}°E)  |  LOLA/LRO',
         fontsize=13, weight='bold')
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# apollo_model_comparison_graph — 4-row composite comparison figure
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apollo_model_comparison_graph(
+    site_name,
+    probe_diurnal,
+    cycles_discrete,
+    cycles_hayne,
+    lat, lon,
+    cycles_discrete_noshadow=None,
+    sunrise_phase_h=None,
+    sunset_phase_h=None,
+    depths_to_show=None,
+    figsize=None,
+):
+    """
+    Four-row composite figure comparing the full Apollo HFE dataset with
+    discrete-layer and Hayne 2017 model predictions.
+
+    Row 1 — Full Apollo HFE time-series for all sensors on both probes,
+             coloured by depth.  Stable window (green) and disturbance
+             regions (orange) are highlighted.
+
+    Row 2 — Peak & dip amplitude profile: max dayside peak and max
+             nightside dip as a function of depth, comparing Apollo
+             observations with the two models.
+
+    Row 3 — Phase-matched diurnal cycles at selected depths.  All sensors
+             are folded onto the same lunar-phase reference so readings from
+             different probes can be directly overlaid.  Sunrise and sunset
+             are annotated; night intervals are shaded.
+
+    Row 4 — Topographic shadowing effect (only drawn when
+             *cycles_discrete_noshadow* is supplied).  Shows the discrete
+             model with and without shadowing at the shallowest active
+             depth, with the shadow temperature deficit filled.
+
+    Parameters
+    ----------
+    site_name        : 'Apollo 15' or 'Apollo 17'
+    probe_diurnal    : dict from hfe_loader.get_probe_diurnal_cycle()
+    cycles_discrete  : dict from analysis.get_diurnal_cycles() — discrete
+                       model (with topographic shadowing)
+    cycles_hayne     : dict from analysis.get_diurnal_cycles() — Hayne 2017
+    lat, lon         : site coordinates in decimal degrees
+    cycles_discrete_noshadow : same structure as cycles_discrete but run
+                       without topographic shadowing; enables Row 4
+    sunrise_phase_h  : hour within [0, day_h] when sunrise occurs;
+                       estimated from day_h * 0.25 if None
+    sunset_phase_h   : hour within [0, day_h] when sunset occurs;
+                       estimated from day_h * 0.75 if None
+    depths_to_show   : list of depth_cm values for Row 3 panels; if None
+                       the four depths with the largest diurnal amplitude
+                       in probe_diurnal are chosen automatically
+    figsize          : (width, height) in inches; computed if None
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import datetime as _dt
+    import lunar.hfe_loader as _hfl
+    from lunar.constants import LUNAR_DAY
+
+    day_h = LUNAR_DAY / 3600.0          # lunar day in hours (~708.7 h)
+
+    # ── Colour palette ────────────────────────────────────────────────────────
+    _C_APOLLO = '#2C3E50'   # dark blue-grey  — Apollo observations
+    _C_DISC   = '#C0392B'   # deep red        — discrete model
+    _C_HAYNE  = '#2471A3'   # deep blue       — Hayne 2017
+    _C_SHADOW = '#85C1E9'   # light blue      — shadow deficit fill
+    _C_SUN    = '#F39C12'   # amber           — sunrise / sunset markers
+
+    # ── Sunrise / sunset: save caller overrides; physics values computed later ─
+    _sunrise_from_caller = sunrise_phase_h
+    _sunset_from_caller  = sunset_phase_h
+    # Temporary fallbacks used until _global_shift_h is known (Rows 1–2 don't
+    # need sunrise/sunset, but the variables must be defined before the loop).
+    if sunrise_phase_h is None:
+        sunrise_phase_h = day_h * 0.25
+    if sunset_phase_h is None:
+        sunset_phase_h  = day_h * 0.75
+
+    # ── Depths for Row 3 ─────────────────────────────────────────────────────
+    def _amp(d_cm):
+        v = probe_diurnal[d_cm]['T_anom']
+        return float(v.max() - v.min())
+
+    if not probe_diurnal:
+        depths_to_show = []
+    elif depths_to_show is None:
+        all_d = sorted(probe_diurnal.keys())
+        depths_to_show = sorted(
+            sorted(all_d, key=_amp, reverse=True)[:4]
+        )
+
+    n_diurnal = max(len(depths_to_show), 1)
+
+    # ── Figure skeleton ───────────────────────────────────────────────────────
+    has_shadow_row  = cycles_discrete_noshadow is not None
+    n_rows          = 4 if has_shadow_row else 3
+    height_ratios   = [2.5, 1.5, 2.0, 1.5][:n_rows]
+
+    if figsize is None:
+        fw = max(16, n_diurnal * 5.5)
+        fh = sum(height_ratios) * 2.2
+        figsize = (fw, fh)
+
+    fig = plt.figure(figsize=figsize)
+    outer = gridspec.GridSpec(
+        n_rows, 1,
+        figure=fig,
+        height_ratios=height_ratios,
+        hspace=0.50,
+    )
+
+    # ── Shared helpers ────────────────────────────────────────────────────────
+    def _closest_model_depth(depth_m, cycles):
+        if not cycles:
+            return None
+        return min(cycles.keys(), key=lambda d: abs(d - depth_m))
+
+    def _model_anom_shifted(cycles, depth_m, shift_h):
+        """Phase-shifted model anomaly (t_sorted, T_anom)."""
+        if not cycles:
+            return None, None
+        dk = _closest_model_depth(depth_m, cycles)
+        if dk is None:
+            return None, None
+        t_h = np.asarray(cycles[dk]['time_h'])
+        T   = np.asarray(cycles[dk]['temperature'], dtype=float)
+        T_a = T - float(np.mean(T))
+        t_w = (t_h + shift_h) % day_h
+        s   = np.argsort(t_w)
+        return t_w[s], T_a[s]
+
+    _val_min_depth   = 80   # cm — validation depth threshold
+    _STABLE_WINDOWS      = getattr(_hfl, '_STABLE_WINDOWS',      {})
+    _DISCREPANCY_REGIONS = getattr(_hfl, '_DISCREPANCY_REGIONS', {})
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROW 1 — Full Apollo HFE time-series
+    # ══════════════════════════════════════════════════════════════════════════
+    probes       = _hfl.load_site(site_name)
+    n_probes     = len(probes)
+    row1_gs      = gridspec.GridSpecFromSubplotSpec(
+        1, n_probes, subplot_spec=outer[0], wspace=0.10,
+    )
+
+    _depth_cmap = plt.get_cmap('viridis_r')
+    all_depths_g = sorted({d['depth_cm']
+                            for probe in probes
+                            for d in probe.values()})
+    g_dmin = all_depths_g[0]  if all_depths_g else 0
+    g_dmax = all_depths_g[-1] if all_depths_g else 250
+    depth_norm   = Normalize(vmin=g_dmin, vmax=g_dmax)
+    probe_windows = _STABLE_WINDOWS.get(site_name) or [None] * n_probes
+    site_disc    = _DISCREPANCY_REGIONS.get(site_name, {})
+
+    _stype_style = {
+        'TG': ('-',  1.8, 0.95),
+        'TR': ('--', 1.1, 0.65),
+        'TC': (':',  0.9, 0.40),
+    }
+
+    for pidx, probe in enumerate(probes):
+        ax1  = fig.add_subplot(row1_gs[pidx])
+        pw   = probe_windows[pidx] if pidx < len(probe_windows) else None
+        t_max_probe = 0
+
+        for sensor, data in sorted(probe.items(),
+                                    key=lambda kv: kv[1]['depth_cm']):
+            times = data['times']
+            temps = data['temps']
+            d_cm  = data['depth_cm']
+            color = _depth_cmap(depth_norm(d_cm))
+
+            t_num = np.array([t.timestamp() / 86400 for t in times])
+            t_num = t_num - t_num[0]
+
+            prefix      = ''.join(c for c in sensor if c.isalpha())[:2]
+            ls, lw, alp = _stype_style.get(prefix, ('-', 1.2, 0.80))
+            in_val      = d_cm >= _val_min_depth
+            if not in_val:
+                alp *= 0.45
+                ls   = ':'
+
+            _tlabels = {'TG': 'official', 'TR': 'supplementary', 'TC': 'non-official'}
+            tag = f' [{_tlabels.get(prefix, prefix)}]' + ('' if in_val else ' · excl.')
+
+            ax1.plot(t_num, temps, lw=lw, ls=ls, color=color, alpha=alp,
+                     label=f'{sensor} ({d_cm} cm){tag}')
+            t_max_probe = max(t_max_probe, t_num[-1])
+
+        win_start, win_end = pw if pw is not None else (0, t_max_probe)
+
+        # Disturbance bands
+        _disc_lbl_added = False
+        for reg_start, reg_end, reg_desc in site_disc.get(pidx, []):
+            r_end = reg_end if reg_end is not None else t_max_probe + 50
+            if r_end < win_start - 300 or reg_start > win_end + 300:
+                continue
+            disc_lbl = 'Disturbance region' if not _disc_lbl_added else '_nolegend_'
+            _disc_lbl_added = True
+            ax1.axvspan(reg_start, r_end, alpha=0.12, color='#E67E22', zorder=1,
+                        label=disc_lbl)
+            ax1.axvline(reg_start, color='#E67E22', ls='--', lw=0.9,
+                        alpha=0.70, zorder=2)
+            ax1.text(reg_start + 4, 0.98,
+                     f'Day {int(reg_start)}\n{reg_desc}',
+                     transform=ax1.get_xaxis_transform(),
+                     fontsize=5.0, va='top', ha='left',
+                     color='#B7770D', clip_on=True)
+
+        # Stable window band
+        ax1.axvspan(win_start, win_end, alpha=0.14, color='#2ECC71', zorder=2,
+                    label=f'Stable window (≥{_val_min_depth} cm)')
+        ax1.axvline(win_start, color='#1E8449', ls='--', lw=1.4,
+                    alpha=0.85, zorder=3)
+        ax1.axvline(win_end,   color='#1E8449', ls=':',  lw=1.2,
+                    alpha=0.65, zorder=3)
+        ax1.text(win_start + 4, 0.03, f'Day {int(win_start)}',
+                 transform=ax1.get_xaxis_transform(),
+                 fontsize=6, va='bottom', ha='left',
+                 color='#1E8449', clip_on=True)
+        ax1.text(win_end - 4, 0.03, f'Day {int(win_end)}',
+                 transform=ax1.get_xaxis_transform(),
+                 fontsize=6, va='bottom', ha='right',
+                 color='#1E8449', clip_on=True)
+
+        ax1.set_title(f'Probe {pidx + 1}', fontsize=11, weight='bold')
+        ax1.set_xlabel('Days since emplacement', fontsize=9)
+        if pidx == 0:
+            ax1.set_ylabel('Temperature (K)', fontsize=9)
+
+        leg1 = ax1.legend(ncol=1, loc='upper right',
+                          **{**_LEG_KW, 'fontsize': 5.8, 'handlelength': 1.6})
+        for ln in leg1.get_lines():
+            ln.set_linewidth(1.8)
+
+    # Depth colorbar anchored to Row 1
+    cbar_r1_ax = fig.add_axes([0.92, 0.80, 0.011, 0.12])
+    sm_r1 = ScalarMappable(cmap=_depth_cmap, norm=depth_norm)
+    sm_r1.set_array([])
+    cb_r1 = fig.colorbar(sm_r1, cax=cbar_r1_ax)
+    cb_r1.set_label('Depth (cm)', fontsize=7, weight='bold', labelpad=5)
+    cb_r1.ax.tick_params(labelsize=6)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROW 2 — Peak & dip amplitude comparison by depth
+    # ══════════════════════════════════════════════════════════════════════════
+    row2_gs  = gridspec.GridSpecFromSubplotSpec(
+        1, 2, subplot_spec=outer[1], wspace=0.38,
+    )
+    ax_peak = fig.add_subplot(row2_gs[0])
+    ax_dip  = fig.add_subplot(row2_gs[1])
+
+    def _model_peak_dip(cycles, depth_m):
+        """(peak_K, dip_K) from a model cycles dict at depth_m."""
+        if not cycles:
+            return None, None
+        dk = _closest_model_depth(depth_m, cycles)
+        if dk is None:
+            return None, None
+        T_a = np.asarray(cycles[dk]['temperature'], dtype=float)
+        T_a = T_a - float(np.mean(T_a))
+        return float(T_a.max()), float(-T_a.min())
+
+    plot_depths_cm = []
+    ap_peaks, ap_dips   = [], []
+    di_peaks, di_dips   = [], []
+    ha_peaks, ha_dips   = [], []
+
+    for d_cm in sorted(probe_diurnal.keys()):
+        T_a = probe_diurnal[d_cm]['T_anom']
+        pk  = float(T_a.max())
+        dp  = float(-T_a.min())
+        if pk < 0.01 and dp < 0.01:
+            continue
+        plot_depths_cm.append(float(d_cm))
+        ap_peaks.append(pk);  ap_dips.append(dp)
+
+        dpk, ddp = _model_peak_dip(cycles_discrete, d_cm / 100.0)
+        di_peaks.append(dpk); di_dips.append(ddp)
+
+        hpk, hdp = _model_peak_dip(cycles_hayne, d_cm / 100.0)
+        ha_peaks.append(hpk); ha_dips.append(hdp)
+
+    depths_arr = np.array(plot_depths_cm)
+
+    for ax_pd, vals_ap, vals_di, vals_ha, title_str in [
+        (ax_peak, ap_peaks, di_peaks, ha_peaks,
+         'Max Dayside Peak  (T \u2212 T\u0304)'),
+        (ax_dip,  ap_dips,  di_dips,  ha_dips,
+         'Max Nightside Dip  (T\u0304 \u2212 T)'),
+    ]:
+        # Apollo
+        ax_pd.plot(vals_ap, depths_arr, 'o-',
+                   color=_C_APOLLO, lw=1.8, ms=6,
+                   label='Apollo (observed)', zorder=5)
+        # Discrete
+        vd_pairs = [(v, d) for v, d in zip(vals_di, depths_arr)
+                    if v is not None]
+        if vd_pairs:
+            vd, dd = zip(*vd_pairs)
+            ax_pd.plot(vd, dd, 's--',
+                       color=_C_DISC, lw=1.6, ms=5,
+                       label='Discrete model', zorder=4)
+        # Hayne
+        vh_pairs = [(v, d) for v, d in zip(vals_ha, depths_arr)
+                    if v is not None]
+        if vh_pairs:
+            vh, dh = zip(*vh_pairs)
+            ax_pd.plot(vh, dh, '^:',
+                       color=_C_HAYNE, lw=1.6, ms=5,
+                       label='Hayne 2017', zorder=4)
+
+        ax_pd.set_xlabel('Amplitude (K)', fontsize=9)
+        ax_pd.set_ylabel('Depth (cm)',    fontsize=9)
+        ax_pd.set_title(title_str, fontsize=10, weight='bold')
+        ax_pd.invert_yaxis()
+        ax_pd.legend(**{**_LEG_KW, 'fontsize': 8})
+        ax_pd.grid(True, alpha=0.30)
+
+        # Skin-depth reference line
+        ax_pd.axhline(_val_min_depth, color='#27AE60',
+                      ls=':', lw=0.9, alpha=0.65)
+        ax_pd.text(0.02, _val_min_depth,
+                   ' diurnal skin depth',
+                   transform=ax_pd.get_yaxis_transform(),
+                   fontsize=6.0, va='bottom', color='#27AE60', alpha=0.80)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROW 3 — Phase-matched diurnal cycles
+    # ══════════════════════════════════════════════════════════════════════════
+    row3_gs = gridspec.GridSpecFromSubplotSpec(
+        1, n_diurnal, subplot_spec=outer[2], wspace=0.32,
+    )
+
+    # ── LLT (Local Lunar Time) alignment ─────────────────────────────────────
+    # Both data and model are converted to LLT using the solar hour-angle:
+    #   H     = (t_unix_s / LUNAR_DAY) * 2π + lon_rad
+    #   LLT_h = ((H / (2π) + 0.5) % 1.0) * day_h       [0, day_h)
+    # LLT = 0 → local midnight, LLT = day_h/2 → local noon.
+    # This is a purely physical coordinate that works for any longitude and
+    # any simulation epoch — no assumptions about t_start_sec % LUNAR_DAY.
+
+    _lon_rad = np.deg2rad(lon)
+
+    def _to_llt(t_unix_arr):
+        """Unix seconds (float array) → LLT hours [0, day_h)."""
+        H = np.asarray(t_unix_arr, float) / LUNAR_DAY * (2 * np.pi) + _lon_rad
+        return ((H / (2 * np.pi) + 0.5) % 1.0) * day_h
+
+    # ── UTC reference for labelling ticks in military clock ──────────────────
+    # Find the local-midnight UTC just before the measurement window.
+    # At midnight: H = (2n-1)π → t_unix = (n − 0.5 − lon_rad/(2π)) * LUNAR_DAY
+    #
+    # IMPORTANT: ref_utc is a naive datetime created via utcfromtimestamp(), so
+    # .timestamp() would interpret it as LOCAL time.  Use calendar.timegm()
+    # to correctly recover the UTC unix timestamp.
+    _ref_utc = next(
+        (v['ref_utc'] for v in probe_diurnal.values() if 'ref_utc' in v),
+        None,
+    )
+    _midnight_utc = None
+    if _ref_utc is not None:
+        # calendar.timegm treats a naive timetuple as UTC seconds
+        _ref_unix = float(calendar.timegm(_ref_utc.timetuple()))
+        _n_ref = _ref_unix / LUNAR_DAY + 0.5 + _lon_rad / (2 * np.pi)
+        _n_mid = int(np.floor(_n_ref))
+        _t_midnight_unix = (_n_mid - 0.5 - _lon_rad / (2 * np.pi)) * LUNAR_DAY
+        _midnight_utc = datetime.datetime.utcfromtimestamp(_t_midnight_unix).replace(
+            tzinfo=datetime.timezone.utc)
+
+    # ── LLT-based model anomaly extractor ────────────────────────────────────
+    def _model_llt_anom(cycles, depth_m):
+        """Return (llt_h, T_anom) for the model on the LLT axis."""
+        if not cycles:
+            return None, None
+        dk = _closest_model_depth(depth_m, cycles)
+        if dk is None:
+            return None, None
+        t_h = np.asarray(cycles[dk]['time_h'])
+        T   = np.asarray(cycles[dk]['temperature'], dtype=float)
+        T_a = T - float(np.mean(T))
+        _t0 = float(cycles[dk].get('t_start_sec', 0.0))
+        t_unix = _t0 + t_h * 3600.0
+        llt = _to_llt(t_unix)
+        idx = np.argsort(llt)
+        return llt[idx], T_a[idx]
+
+    # ── Sunrise/sunset in LLT ─────────────────────────────────────────────────
+    _sunrise_llt = _sunset_llt = None
+    _t_win_ss = np.linspace(0, day_h * 3600, 4000)
+    # Use the corrected UTC unix time (calendar.timegm, not .timestamp())
+    _base_unix = _ref_unix if _ref_utc is not None else 0.0
+    _t_abs_ss  = _base_unix + _t_win_ss
+    _lat_r     = np.deg2rad(lat)
+    _decl_ss   = np.deg2rad(1.54) * np.sin(2 * np.pi * _t_abs_ss / (27.3 * 86400.0))
+    _hang_ss   = (_t_abs_ss / LUNAR_DAY) * 2 * np.pi + _lon_rad
+    _cosz_ss   = np.clip(
+        np.sin(_lat_r) * np.sin(_decl_ss) +
+        np.cos(_lat_r) * np.cos(_decl_ss) * np.cos(_hang_ss),
+        -1.0, 1.0,
+    )
+    for _i in np.where(np.diff(np.sign(_cosz_ss)))[0]:
+        _c1, _c2 = float(_cosz_ss[_i]), float(_cosz_ss[_i + 1])
+        _frac = -_c1 / (_c2 - _c1)
+        _tc_s2 = float(_t_win_ss[_i] + _frac * (_t_win_ss[_i + 1] - _t_win_ss[_i]))
+        _tc_llt = float(_to_llt(np.array([_base_unix + _tc_s2]))[0])
+        if _c1 < 0:   # rising → sunrise
+            _sunrise_llt = _tc_llt
+        else:          # falling → sunset
+            _sunset_llt  = _tc_llt
+
+    # ── Helper: find peak LLT of a curve (handles wrap-around) ───────────────
+    def _curve_peak_llt(llt_arr, anom_arr):
+        """Return LLT of the maximum of anom_arr (handles wrap-around)."""
+        if llt_arr is None or len(llt_arr) < 3:
+            return None
+        idx = np.argsort(llt_arr)
+        ls, Ts = llt_arr[idx], anom_arr[idx]
+        ext_l = np.concatenate([ls - day_h, ls, ls + day_h])
+        ext_T = np.concatenate([Ts, Ts, Ts])
+        fine  = np.linspace(0, day_h, 2000)
+        Tf    = np.interp(fine, ext_l, ext_T)
+        return float(fine[np.argmax(Tf)])
+
+    # ── Named LLT tick positions ───────────────────────────────────────────────
+    # Key solar-event positions on the LLT axis [0, day_h):
+    #   midnight = 0 and day_h, noon = day_h/2, sunrise/sunset from geometry.
+    _noon_llt = day_h / 2.0
+
+    def _llt_named_ticks():
+        """Return (tick_positions, tick_labels) for the LLT axis."""
+        ticks  = [0.0]
+        labels = ['Midnight\n(LLT 0h)']
+        if _sunrise_llt is not None:
+            ticks.append(_sunrise_llt)
+            labels.append(f'Sunrise\n({_sunrise_llt:.0f}h)')
+        ticks.append(_noon_llt)
+        labels.append(f'Noon\n({_noon_llt:.0f}h)')
+        if _sunset_llt is not None:
+            ticks.append(_sunset_llt)
+            labels.append(f'Sunset\n({_sunset_llt:.0f}h)')
+        ticks.append(day_h)
+        labels.append(f'Midnight\n({day_h:.0f}h)')
+        return ticks, labels
+
+    _leg_seen_r3 = {}
+
+    for col_idx, d_cm in enumerate(depths_to_show):
+        ax3   = fig.add_subplot(row3_gs[col_idx])
+        entry = probe_diurnal.get(d_cm)
+        if entry is None:
+            ax3.set_visible(False)
+            continue
+
+        stype  = entry.get('stype', 'TG')
+        sensor = entry.get('sensor', f'{d_cm} cm')
+        T_anom = entry['T_anom']
+
+        # Night shading (LLT x-axis)
+        if _sunrise_llt is not None:
+            ax3.axvspan(0, _sunrise_llt,
+                        color='#1a1a2e', alpha=0.10, zorder=0)
+        if _sunset_llt is not None:
+            ax3.axvspan(_sunset_llt, day_h,
+                        color='#1a1a2e', alpha=0.10, zorder=0)
+        ax3.axhline(0, color='#888888', lw=0.7, ls=':', zorder=1)
+
+        # Apollo scatter + binned mean ± std — data converted to LLT
+        t_ph     = entry['time_h']
+        # Convert phase-folded hours (relative to ref_utc) to LLT
+        # _ref_unix is already correctly set via calendar.timegm above
+        if _ref_utc is not None:
+            t_llt = _to_llt(_ref_unix + t_ph * 3600.0)
+        else:
+            t_llt = t_ph % day_h
+
+        # Adapt bin count to data density so sparse TR sensors still show a curve
+        n_pts  = len(T_anom)
+        n_bins = max(12, min(48, n_pts // 3))
+        min_pts = 1 if n_pts < 60 else 3
+        bin_edges = np.linspace(0, day_h, n_bins + 1)
+        bin_mids  = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        bin_idx   = np.clip(
+            np.searchsorted(bin_edges, t_llt, side='right') - 1, 0, n_bins - 1)
+        bin_mean  = np.full(n_bins, np.nan)
+        bin_std   = np.full(n_bins, np.nan)
+        for b in range(n_bins):
+            vals = T_anom[bin_idx == b]
+            if len(vals) >= min_pts:
+                bin_mean[b] = np.mean(vals)
+                bin_std[b]  = np.std(vals) if len(vals) >= 2 else 0.0
+
+        ax3.scatter(t_llt, T_anom, s=1, alpha=0.07,
+                    color='#888888', rasterized=True, zorder=2)
+        good     = ~np.isnan(bin_mean)
+        mk_stype = _STYPE_MARKER.get(stype, 'o')
+        lbl_ap   = f'Apollo {_STYPE_LABEL.get(stype, stype)}'
+        ax3.errorbar(
+            bin_mids[good], bin_mean[good], yerr=bin_std[good],
+            fmt=mk_stype, markersize=5, color=_C_APOLLO,
+            ecolor='#aaaaaa', elinewidth=0.7, capsize=1.5,
+            linewidth=1.0, zorder=5, label=lbl_ap,
+        )
+
+        # Annotate Apollo peak and dip
+        if good.any():
+            pk_i = int(np.nanargmax(bin_mean))
+            dp_i = int(np.nanargmin(bin_mean))
+            ax3.annotate(
+                f'+{bin_mean[pk_i]:.2f} K',
+                xy=(bin_mids[pk_i], bin_mean[pk_i]),
+                xytext=(0, 7), textcoords='offset points',
+                fontsize=6, ha='center', color=_C_APOLLO, weight='bold',
+                arrowprops=dict(arrowstyle='->', color=_C_APOLLO, lw=0.8),
+            )
+            ax3.annotate(
+                f'{bin_mean[dp_i]:.2f} K',
+                xy=(bin_mids[dp_i], bin_mean[dp_i]),
+                xytext=(0, -10), textcoords='offset points',
+                fontsize=6, ha='center', color=_C_APOLLO, weight='bold',
+                arrowprops=dict(arrowstyle='->', color=_C_APOLLO, lw=0.8),
+            )
+
+        # Discrete model curve (LLT x-axis)
+        llt_d, A_d = _model_llt_anom(cycles_discrete, d_cm / 100.0)
+        if llt_d is not None:
+            ax3.plot(llt_d, A_d, lw=2.0, color=_C_DISC,
+                     zorder=6, label='Discrete model')
+
+        # Hayne model curve (LLT x-axis)
+        llt_h, A_h = _model_llt_anom(cycles_hayne, d_cm / 100.0)
+        if llt_h is not None:
+            ax3.plot(llt_h, A_h, lw=2.0, color=_C_HAYNE,
+                     ls='--', zorder=6, label='Hayne 2017')
+
+        # Shadow fill
+        if cycles_discrete_noshadow is not None:
+            llt_ns, A_ns = _model_llt_anom(cycles_discrete_noshadow, d_cm / 100.0)
+            if llt_ns is not None and llt_d is not None:
+                _tc_llt = np.linspace(0, day_h, 300)
+                A_d_int  = np.interp(_tc_llt, llt_d,  A_d)
+                A_ns_int = np.interp(_tc_llt, llt_ns, A_ns)
+                ax3.fill_between(
+                    _tc_llt, A_d_int, A_ns_int,
+                    where=A_ns_int > A_d_int,
+                    alpha=0.25, color=_C_SHADOW, zorder=3,
+                    label='Shadow deficit',
+                )
+
+        # Sunrise / sunset vertical lines
+        for sr_llt3, sr_lbl in [
+            (_sunrise_llt, '\u2600 Sunrise'),
+            (_sunset_llt,  'Sunset \u2600'),
+        ]:
+            if sr_llt3 is not None:
+                ax3.axvline(sr_llt3, color=_C_SUN, lw=1.3,
+                            ls='--', alpha=0.85, zorder=7)
+
+        # ── Peak alignment markers ─────────────────────────────────────────────
+        # Compute peak LLT for data and model; draw vertical lines so the user
+        # can see immediately whether they coincide.
+        _pk_data  = _curve_peak_llt(t_llt, T_anom) if len(t_llt) > 5 else None
+        _pk_model = _curve_peak_llt(llt_d, A_d)    if llt_d is not None else None
+
+        if _pk_data is not None:
+            ax3.axvline(_pk_data, color=_C_APOLLO, lw=1.4,
+                        ls='-.', alpha=0.70, zorder=8)
+            ax3.text(_pk_data / day_h, 0.01, 'D',
+                     transform=ax3.transAxes,
+                     fontsize=6, color=_C_APOLLO, ha='center', va='bottom',
+                     weight='bold')
+
+        if _pk_model is not None:
+            ax3.axvline(_pk_model, color=_C_DISC, lw=1.4,
+                        ls='-.', alpha=0.70, zorder=8)
+            ax3.text(_pk_model / day_h, 0.01, 'M',
+                     transform=ax3.transAxes,
+                     fontsize=6, color=_C_DISC, ha='center', va='bottom',
+                     weight='bold')
+
+        # Phase-offset annotation (signed, shortest path around the circle)
+        if _pk_data is not None and _pk_model is not None:
+            _diff_h = (_pk_data - _pk_model + day_h / 2) % day_h - day_h / 2
+            _diff_24 = _diff_h / day_h * 24.0
+            _sign = '+' if _diff_h >= 0 else ''
+            ax3.text(0.99, 0.98,
+                     f'\u0394peak: {_sign}{_diff_h:.0f}h ({_sign}{_diff_24:.1f}/24h)',
+                     transform=ax3.transAxes,
+                     fontsize=6.0, ha='right', va='top',
+                     color='#333333',
+                     bbox=dict(boxstyle='round,pad=0.2', fc='white',
+                               ec='#aaaaaa', alpha=0.8))
+
+        # ── x-axis: Local Lunar Time with named solar-event ticks ─────────────
+        ax3.set_xlim(0, day_h)
+        _t3, _l3 = _llt_named_ticks()
+        ax3.set_xticks(_t3)
+        ax3.set_xticklabels(_l3, fontsize=6.5)
+        ax3.set_xlabel('Local Lunar Time', fontsize=8)
+
+        ax3.set_title(f'{d_cm} cm  \u2014  {sensor}', fontsize=9, weight='bold')
+        if col_idx == 0:
+            ax3.set_ylabel('T anomaly (K)', fontsize=8)
+        ax3.tick_params(axis='x', labelsize=6.5, rotation=0)
+        ax3.tick_params(axis='y', labelsize=7)
+
+        # Noon vertical guide line
+        ax3.axvline(_noon_llt, color=_C_SUN, lw=0.8, ls=':', alpha=0.5, zorder=1)
+
+        for h, lbl in zip(*ax3.get_legend_handles_labels()):
+            if lbl not in _leg_seen_r3:
+                _leg_seen_r3[lbl] = h
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # ROW 4 — Topographic shadowing effect (optional)
+    # ══════════════════════════════════════════════════════════════════════════
+    if has_shadow_row:
+        row4_gs = gridspec.GridSpecFromSubplotSpec(
+            1, 1, subplot_spec=outer[3],
+        )
+        ax4 = fig.add_subplot(row4_gs[0])
+
+        # Shallowest TC sensor with measurable amplitude, else first diurnal depth
+        tc_depths = [
+            d for d in sorted(probe_diurnal.keys())
+            if probe_diurnal[d].get('stype') == 'TC'
+            and probe_diurnal[d]['T_anom'].ptp() > 0.10
+        ]
+        sd_cm = tc_depths[0] if tc_depths else (
+            depths_to_show[0] if depths_to_show else 14)
+
+        entry_s = probe_diurnal.get(sd_cm)
+        if entry_s is not None:
+            T_an_s   = entry_s['T_anom']
+            stype_s  = entry_s.get('stype', 'TG')
+            t_ph_s   = entry_s['time_h']
+            # Convert to LLT using correctly-computed UTC unix time
+            if _ref_utc is not None:
+                t_llt_s = _to_llt(_ref_unix + t_ph_s * 3600.0)
+            else:
+                t_llt_s = t_ph_s % day_h
+
+            ax4.scatter(t_llt_s, T_an_s, s=1.5, alpha=0.08,
+                        color='#888888', rasterized=True, zorder=2)
+
+            # Binned Apollo mean for shadow panel
+            _be      = np.linspace(0, day_h, 49)
+            _bm_s    = 0.5 * (_be[:-1] + _be[1:])
+            _bidx_s  = np.clip(
+                np.searchsorted(_be, t_llt_s, side='right') - 1, 0, 47)
+            _bmean_s = np.full(48, np.nan)
+            for b in range(48):
+                vv = T_an_s[_bidx_s == b]
+                if len(vv) >= 3:
+                    _bmean_s[b] = np.mean(vv)
+            _good_s = ~np.isnan(_bmean_s)
+            ax4.plot(
+                _bm_s[_good_s], _bmean_s[_good_s],
+                _STYPE_MARKER.get(stype_s, 'o') + '-',
+                color=_C_APOLLO, lw=1.4, ms=4, zorder=5,
+                label='Apollo (observed)',
+            )
+
+        # Discrete with shadowing
+        llt_ds, A_ds = _model_llt_anom(cycles_discrete, sd_cm / 100.0)
+        if llt_ds is not None:
+            ax4.plot(llt_ds, A_ds, lw=2.2, color=_C_DISC, zorder=6,
+                     label='Discrete (with shadowing)')
+
+        # Discrete without shadowing
+        llt_ns4, A_ns4 = _model_llt_anom(cycles_discrete_noshadow, sd_cm / 100.0)
+        if llt_ns4 is not None:
+            ax4.plot(llt_ns4, A_ns4, lw=2.0, color=_C_DISC,
+                     ls='--', alpha=0.65, zorder=5,
+                     label='Discrete (no shadowing)')
+
+        # Shadow deficit fill
+        if llt_ds is not None and llt_ns4 is not None:
+            _tc4   = np.linspace(0, day_h, 300)
+            A_ds_int = np.interp(_tc4, llt_ds,  A_ds)
+            A_ns_int = np.interp(_tc4, llt_ns4, A_ns4)
+            ax4.fill_between(
+                _tc4, A_ds_int, A_ns_int,
+                where=A_ns_int > A_ds_int,
+                alpha=0.30, color=_C_SHADOW, zorder=3,
+                label='Shadow temperature deficit',
+            )
+
+        # Night shading + sunrise/sunset lines (LLT)
+        if _sunrise_llt is not None:
+            ax4.axvspan(0, _sunrise_llt, color='#1a1a2e', alpha=0.10, zorder=0)
+        if _sunset_llt is not None:
+            ax4.axvspan(_sunset_llt, day_h, color='#1a1a2e', alpha=0.10, zorder=0)
+        ax4.axhline(0, color='#888888', lw=0.7, ls=':', zorder=1)
+        for sr_llt4 in [_sunrise_llt, _sunset_llt]:
+            if sr_llt4 is not None:
+                ax4.axvline(sr_llt4, color=_C_SUN, lw=1.3,
+                            ls='--', alpha=0.85, zorder=7)
+        ax4.axvline(_noon_llt, color=_C_SUN, lw=0.8, ls=':', alpha=0.5, zorder=1)
+
+        ax4.set_xlim(0, day_h)
+        _t4, _l4 = _llt_named_ticks()
+        ax4.set_xticks(_t4)
+        ax4.set_xticklabels(_l4, fontsize=6.5)
+        ax4.set_xlabel('Local Lunar Time', fontsize=9)
+        ax4.set_ylabel('T anomaly (K)', fontsize=9)
+        ax4.set_title(
+            f'Topographic Shadowing Effect \u2014 Discrete Model  ({sd_cm} cm)',
+            fontsize=10, weight='bold',
+        )
+        ax4.legend(**{**_LEG_KW, 'fontsize': 8})
+        ax4.grid(True, alpha=0.30)
+
+    # ── Shared legend for Row 3 ───────────────────────────────────────────────
+    if _leg_seen_r3:
+        fig.legend(
+            list(_leg_seen_r3.values()),
+            list(_leg_seen_r3.keys()),
+            loc='lower center',
+            bbox_to_anchor=(0.5, -0.02),
+            ncol=min(len(_leg_seen_r3), 5),
+            **{**_LEG_KW, 'fontsize': 8.5},
+        )
+
+    # ── Overall figure title ──────────────────────────────────────────────────
+    fig.suptitle(
+        f'{site_name} \u2014 Apollo HFE Full Dataset  \u00b7  Model Comparison\n'
+        f'Lat {lat:.3f}\u00b0N  \u00b7  Lon {lon:.3f}\u00b0E',
+        fontsize=13, weight='bold', y=1.01,
+    )
+
+    plt.tight_layout()
     return fig
