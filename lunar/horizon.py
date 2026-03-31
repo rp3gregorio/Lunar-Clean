@@ -87,6 +87,13 @@ def check_illumination(solar_zenith, solar_azimuth, horizons, az_angles):
     """
     Return True if the Sun is above the local horizon (surface is lit).
 
+    The horizon angle is **linearly interpolated** between the two nearest
+    precomputed azimuth bins.  This eliminates the sawtooth artefact from
+    simple nearest-neighbour bin lookup: for a typical 36-bin grid (10°
+    spacing) the old approach could misclassify illumination for ±5° of
+    azimuth around each bin boundary, producing flickering in the surface-
+    temperature time-series near the terminator.
+
     Parameters
     ----------
     solar_zenith   : solar zenith angle (radians); π/2 = on horizon, >π/2 = below
@@ -99,9 +106,16 @@ def check_illumination(solar_zenith, solar_azimuth, horizons, az_angles):
 
     solar_elev = np.pi / 2.0 - solar_zenith
     n_az       = len(az_angles)
-    idx        = int(round(solar_azimuth / (2.0 * np.pi) * n_az)) % n_az
 
-    return solar_elev > horizons[idx]
+    # Linear interpolation between the two bounding azimuth bins
+    az_frac = solar_azimuth / (2.0 * np.pi) * n_az
+    idx_lo  = int(az_frac) % n_az
+    idx_hi  = (idx_lo + 1) % n_az
+    w       = az_frac - int(az_frac)   # weight for the upper bin (0 ≤ w < 1)
+
+    h_interp = (1.0 - w) * horizons[idx_lo] + w * horizons[idx_hi]
+
+    return solar_elev > h_interp
 
 
 @njit(cache=True, fastmath=True)

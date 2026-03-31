@@ -1,0 +1,992 @@
+%% ============================================================
+%%  Lunar Thermal Model -- Plain-Language Technical Summary
+%%  Paste into Overleaf and compile with pdfLaTeX
+%% ============================================================
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{mdframed}
+\usepackage{array}
+\usepackage{microtype}
+
+%% Colours
+\definecolor{moonblue}{RGB}{25, 80, 150}
+\definecolor{moongray}{RGB}{75, 75, 85}
+\definecolor{moonwarm}{RGB}{170, 70, 20}
+\definecolor{boxbg}{RGB}{238, 244, 255}
+\definecolor{eqbg}{RGB}{255, 252, 230}
+
+%% Hyperlinks
+\hypersetup{colorlinks=true, linkcolor=moonblue,
+            urlcolor=moonblue, citecolor=moonblue}
+
+%% Section headings
+\titleformat{\section}{\large\bfseries\color{moonblue}}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries\color{moongray}}{}{0em}{}
+\titleformat{\subsubsection}{\normalsize\itshape\color{moongray}}{}{0em}{}
+
+%% Header / footer
+\pagestyle{fancy}\fancyhf{}
+\rhead{\small Lunar Thermal Model Summary}
+\lhead{\small \textcolor{moongray}{Gregorio}}
+\rfoot{\small \thepage}
+
+%% Blue info box
+\newmdenv[backgroundcolor=boxbg, linecolor=moonblue, linewidth=1pt,
+          roundcorner=4pt, innerleftmargin=10pt, innerrightmargin=10pt,
+          innertopmargin=7pt, innerbottommargin=7pt]{plainbox}
+
+%% Yellow equation-explanation box
+\newmdenv[backgroundcolor=eqbg, linecolor=moonwarm, linewidth=1pt,
+          roundcorner=4pt, innerleftmargin=10pt, innerrightmargin=10pt,
+          innertopmargin=7pt, innerbottommargin=7pt]{eqbox}
+
+%% ============================================================
+\begin{document}
+
+%% ---------- Title page --------------------------------------
+\begin{titlepage}
+  \centering\vspace*{1.8cm}
+  {\Huge\bfseries\color{moonblue}
+    One-Dimensional Lunar\\[6pt] Subsurface Thermal Model}\\[1.2cm]
+  {\large A Plain-Language Technical Summary\\
+   from First Principles to Python Results}\\[2.2cm]
+  {\large\itshape Gregorio, R.\,P.}\\[0.5cm]
+  {\normalsize\color{moongray}
+   Based on the \texttt{Lunar-Clean} Python notebook\\[2pt]
+   \url{https://github.com/rp3gregorio/Lunar-Clean}}\\[3cm]
+  {\large \today}
+  \vfill
+  \begin{plainbox}
+    \textbf{Purpose of this document.}
+    This paper explains, in plain English, every equation and every
+    number used in the lunar thermal model.
+    No prior background in physics or planetary science is assumed.
+    After reading it you should be able to say:
+    \emph{``I know what the model is doing, why each number is there,
+    and what the outputs mean.''}
+  \end{plainbox}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+%% ============================================================
+\section{Introduction -- Why Does the Moon Get So Hot and Cold?}
+
+The Moon has no atmosphere.
+On Earth the air acts like a blanket: it slows down how fast heat
+arrives from the Sun and how fast it escapes at night.
+On the Moon there is no blanket.
+As a result the surface swings from roughly
+\textbf{100\,K} ($-173\,^{\circ}$C) at night to
+\textbf{390\,K} ($+117\,^{\circ}$C) in the middle of the day --
+a swing of nearly 300 degrees, about five times the most extreme
+range ever recorded on Earth.
+
+A \textbf{lunar day} lasts 29.53 Earth days (one full rotation of
+the Moon relative to the Sun).
+The surface bakes for $\sim$two Earth weeks, then freezes for
+$\sim$two more weeks.
+
+This model answers: \emph{how does that heat wave travel downward
+into the soil?}
+By the time you are 1\,metre underground the temperature barely
+changes at all -- the soil insulates itself.
+Understanding this depth profile matters for:
+
+\begin{itemize}[leftmargin=1.5em, itemsep=2pt]
+  \item Designing future lunar mission hardware (batteries,
+        electronics, and human habitats all have temperature limits).
+  \item Understanding the Moon's internal heat and geological history.
+  \item Interpreting satellite observations from the Diviner radiometer
+        aboard the Lunar Reconnaissance Orbiter (LRO).
+\end{itemize}
+
+%% ============================================================
+\section{The Lunar Soil (Regolith)}
+
+The top few metres of the Moon are covered by a layer of fine,
+powdery, pulverised rock called \textbf{regolith}.
+It has been ground up by billions of years of meteorite impacts.
+Its thermal properties are very different from ordinary rock:
+
+\begin{itemize}[leftmargin=1.5em, itemsep=2pt]
+  \item It is \textbf{extremely fluffy near the surface} --
+        imagine very dry, loose talcum powder.
+        This makes it a poor conductor of heat.
+  \item It becomes \textbf{progressively denser and more compact
+        with depth} because the weight of overlying material
+        compresses it.
+  \item Apollo astronauts drilled into it to about 2\,metres and
+        measured temperature at several depths.
+        These measurements are used to validate the model.
+\end{itemize}
+
+%% ============================================================
+\section{The Digital Elevation Model (DEM)}
+
+Before simulating temperature the model needs to know the shape of
+the terrain.
+It uses the \textbf{LOLA LDEM} -- the Lunar Orbiter Laser Altimeter
+Global Digital Elevation Model -- produced by NASA's LRO mission.
+
+\begin{plainbox}
+  \textbf{What a DEM is.}
+  Think of it as a huge grid of altitude measurements covering
+  the whole Moon.
+  Each grid cell holds one number: the height of that spot above
+  a reference sphere of radius
+  $R_{\Moon} = 1{,}737{,}400$\,m (the Moon's mean radius).
+\end{plainbox}
+
+The version included in this repository (\texttt{LDEM\_4}) has:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Property & Value \\
+\midrule
+Grid size       & $720 \times 1440$ pixels \\
+Resolution      & 4 pixels per degree \\
+Pixel size      & $\approx 7{,}581$\,m per pixel \\
+Elevation range & $-17{,}758$\,m to $+21{,}008$\,m \\
+Elevation unit  & metres relative to $R_{\Moon}$ \\
+Digital number scale & 1\,DN $= 0.5$\,m \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The DEM is used for three purposes:
+(1) reading the elevation, slope, and aspect of the target location;
+(2) computing the \textbf{horizon profile} (how high surrounding
+hills appear); and
+(3) drawing the terrain maps in Section~2b of the notebook.
+
+\subsection{Converting coordinates to pixels}
+
+The DEM uses a \textbf{simple cylindrical} (equirectangular)
+projection, with column~0 at $0^{\circ}$E and row~0 at $90^{\circ}$N.
+To convert latitude $\phi$ and longitude $\lambda$ to a pixel:
+
+\begin{equation}
+  \text{row} =
+    \left\lfloor \frac{90 - \phi}{\,p\,} - 0.5 \right\rceil,
+  \qquad
+  \text{col} =
+    \left\lfloor \frac{\lambda}{\,p\,} - 0.5 \right\rceil
+  \label{eq:pixel}
+\end{equation}
+
+where $p = 1/\text{map\_res} = 0.25^{\circ}$/pixel is the angular
+pixel size and $\lfloor\cdot\rceil$ means ``round to nearest integer''.
+
+\subsection{Slope and aspect from the DEM}
+
+The \textbf{slope} $\alpha$ is the steepness of the terrain
+(degrees from horizontal).
+The \textbf{aspect} $\beta$ is the compass direction the slope
+faces ($0 = $ north, $90^{\circ} = $ east).
+Both are computed by taking height differences between neighbouring
+pixels (\emph{central differences}):
+
+\begin{equation}
+  \frac{\partial z}{\partial x}
+    \approx \frac{z_{i,\,j+1}-z_{i,\,j-1}}{2\,\Delta x},
+  \qquad
+  \frac{\partial z}{\partial y}
+    \approx \frac{z_{i+1,\,j}-z_{i-1,\,j}}{2\,\Delta y}
+  \label{eq:gradient}
+\end{equation}
+
+\begin{equation}
+  \alpha = \arctan\!\left(
+    \sqrt{\left(\frac{\partial z}{\partial x}\right)^2 +
+          \left(\frac{\partial z}{\partial y}\right)^2}
+  \right),
+  \qquad
+  \beta  = \arctan\!\left(
+    \frac{\partial z/\partial x}{-\partial z/\partial y}
+  \right)
+  \label{eq:slope_aspect}
+\end{equation}
+
+where $\Delta x = \Delta y = \texttt{pixel\_m} \approx 7{,}581$\,m.
+
+%% ============================================================
+\section{Solar Geometry -- Where Is the Sun?}
+
+The amount of energy hitting the surface at any moment depends
+entirely on the Sun's position in the sky.
+
+\subsection{Lunar rotation and the solar day}
+
+The Moon completes one rotation relative to the Sun in one synodic
+month:
+
+\begin{equation}
+  T_{\text{lunar}} = 29.53 \times 86{,}400
+                   \approx 2{,}551{,}392\,\text{s}
+  \label{eq:lunar_day}
+\end{equation}
+
+\subsection{Solar declination (seasonal wobble)}
+
+The Moon's spin axis is tilted by only $1.54^{\circ}$ relative to
+its orbital plane (Earth's tilt is $23.5^{\circ}$).
+This tiny tilt produces a small seasonal variation in the Sun's
+angle above the equator:
+
+\begin{equation}
+  \delta(t) = 1.54^{\circ} \times
+  \sin\!\left(\frac{2\pi\,t}{27.3 \times 86{,}400}\right)
+  \label{eq:declination}
+\end{equation}
+
+where $t$ is time in seconds since an arbitrary epoch.
+
+\begin{plainbox}
+  \textbf{Plain English.}
+  $\delta(t)$ is the angle between the Sun and the lunar equator.
+  Because it is so small ($\pm 1.54^{\circ}$), the Moon has almost
+  no seasons.
+  The dominant effect is the daily (monthly) rotation -- local noon
+  versus local midnight.
+\end{plainbox}
+
+\subsection{Hour angle}
+
+The \textbf{hour angle} $h$ describes the Sun's east--west position
+in the sky; it increases as the Moon rotates:
+
+\begin{equation}
+  h(t) = \frac{2\pi\,t}{T_{\text{lunar}}} + \lambda_{\text{rad}}
+  \label{eq:hour_angle}
+\end{equation}
+
+where $\lambda_{\text{rad}}$ is the site longitude in radians.
+When $h = 0$ the Sun is directly overhead for an equatorial site.
+
+\subsection{Solar zenith angle}
+
+The \textbf{zenith angle} $\theta_z$ measures how far the Sun is
+from being directly overhead ($\theta_z = 0^{\circ}$ = overhead,
+$\theta_z = 90^{\circ}$ = on the horizon):
+
+\begin{equation}
+  \cos\theta_z
+  = \sin\phi\,\sin\delta + \cos\phi\,\cos\delta\,\cos h
+  \label{eq:zenith}
+\end{equation}
+
+where $\phi$ is the site latitude.
+
+\begin{plainbox}
+  \textbf{Intuition.}
+  On the equator at local noon ($h=0$, $\delta\approx0$):
+  $\cos\theta_z = 1$, so the Sun is directly overhead.
+  At the poles the Sun skims the horizon at most times, which is
+  why some polar craters remain permanently in shadow.
+\end{plainbox}
+
+\subsection{Absorbed solar flux on a sloped surface}
+
+The total solar energy available at the Moon is the
+\textbf{solar constant}:
+\begin{equation}
+  S_0 = 1361\,\text{W\,m}^{-2}
+  \label{eq:solar_constant}
+\end{equation}
+
+Not all of it is absorbed.
+The \textbf{albedo} $A$ is the fraction reflected away
+(lunar regolith: $A \approx 0.09$, so 91\% is absorbed).
+A sloped surface tilted at angle $\alpha$ and facing direction
+$\beta$ intercepts a different amount of sunlight than a flat surface.
+The absorbed solar flux is:
+
+\begin{equation}
+  Q_{\odot} = S_{\text{scale}}\,(1 - A)\,S_0\,\cos\theta_i
+  \label{eq:solar_flux}
+\end{equation}
+
+where the \textbf{incidence angle} $\theta_i$ between the Sun
+direction and the surface normal is:
+
+\begin{equation}
+  \cos\theta_i =
+    \cos\theta_z\cos\alpha
+    + \sin\theta_z\sin\alpha\cos(\beta - \theta_{az})
+  \label{eq:incidence}
+\end{equation}
+
+and $\theta_{az}$ is the solar azimuth.
+The factor $S_{\text{scale}}$ (``SUNSCALE'', default 1.10) is
+an adjustable calibration multiplier.
+If $\cos\theta_i \le 0$ the surface faces away from the Sun
+and $Q_{\odot} = 0$.
+
+%% ============================================================
+\section{Topographic Shadowing}
+
+A location can receive zero sunlight even when the Sun is
+geometrically above the horizon if a nearby hill blocks it.
+
+\subsection{Horizon elevation profile}
+
+For each of $N_{\varphi} = 360$ azimuth directions $\varphi_k$,
+the model scans outward from the target pixel and records the
+maximum angular elevation of any terrain obstacle:
+
+\begin{equation}
+  H(\varphi_k)
+  = \max_{d}\; \arctan\!\left(
+      \frac{z(d,\varphi_k) - z_0}{\,d\cdot\Delta x\,}
+    \right)
+  \label{eq:horizon}
+\end{equation}
+
+where $z_0$ is the target elevation and $d$ is the horizontal
+distance to the obstacle pixel.
+
+\subsection{Illumination check}
+
+The surface is lit if and only if the Sun's elevation angle
+exceeds the terrain horizon in the Sun's direction:
+
+\begin{equation}
+  \text{lit} =
+  \begin{cases}
+    \mathrm{True}  &
+      \text{if } \theta_z < \tfrac{\pi}{2}
+      \text{ and }
+      \bigl(\tfrac{\pi}{2} - \theta_z\bigr) > H(\theta_{az}) \\[4pt]
+    \mathrm{False} & \text{otherwise}
+  \end{cases}
+  \label{eq:illumination}
+\end{equation}
+
+\begin{plainbox}
+  \textbf{Plain English.}
+  Imagine shining a torch toward a hill.
+  The torch (Sun) must be higher in the sky than the top of the
+  hill for the light to reach the ground in front of you.
+  The horizon profile records the ``top of every hill'' in every
+  compass direction.
+\end{plainbox}
+
+\subsection{Sky-view factor (SVF)}
+
+The \textbf{sky-view factor} is a single number summarising how
+much of the open sky hemisphere is visible from the target point.
+SVF = 1.0 means flat, unobstructed terrain; SVF $< 1$ means
+surrounding terrain blocks part of the sky.
+
+\begin{equation}
+  \mathrm{SVF}
+  = \frac{1}{2\pi}\int_0^{2\pi}\cos^3\!\bigl(H(\varphi)\bigr)\,
+    \mathrm{d}\varphi
+  \approx
+  \frac{1}{N_{\varphi}}\sum_{k=1}^{N_{\varphi}}
+    \cos^3\!\bigl(H(\varphi_k)\bigr)
+  \label{eq:svf}
+\end{equation}
+
+%% ============================================================
+\section{The Heat Conduction Equation -- The Core of the Model}
+
+\subsection{Physical idea}
+
+When one part of a material is hotter than a neighbouring part,
+heat flows from hot to cold.
+The rate of flow depends on how easily the material conducts heat
+(its \emph{thermal conductivity}).
+In the Moon's regolith this process describes how the surface
+warmth (or cold) spreads downward into the soil.
+
+\subsection{Governing equation}
+
+The model solves the \textbf{one-dimensional heat conduction
+equation}:
+
+\begin{equation}
+  \rho(z)\,c(T)\,\frac{\partial T}{\partial t}
+  =
+  \frac{\partial}{\partial z}
+  \!\left[k(T,z)\,\frac{\partial T}{\partial z}\right]
+  \label{eq:heat_eq}
+\end{equation}
+
+\begin{eqbox}
+  \textbf{Reading the equation term by term.}
+  \begin{itemize}[leftmargin=1.2em, itemsep=3pt]
+    \item $T(z,t)$ -- temperature (K) at depth $z$ (m) and
+          time $t$ (s).
+    \item $\rho(z)$ -- density (kg/m$^3$) of the soil at depth $z$.
+    \item $c(T)$ -- specific heat capacity (J/(kg\,K)):
+          energy needed to raise 1\,kg by 1\,K.
+    \item \textbf{Left side} $\rho c\,\partial T/\partial t$:
+          rate at which energy is stored in the soil.
+    \item $k(T,z)$ -- thermal conductivity (W/(m\,K)):
+          how easily heat flows through the material.
+    \item $k\,\partial T/\partial z$ -- heat flux (W/m$^2$)
+          flowing vertically.
+    \item \textbf{Right side}: net heat arriving at each point
+          from its neighbours above and below.
+  \end{itemize}
+\end{eqbox}
+
+%% ============================================================
+\section{Material Properties of Lunar Regolith}
+
+\subsection{Thermal conductivity}
+
+Conductivity in regolith has two components:
+
+\begin{enumerate}[leftmargin=1.5em, itemsep=2pt]
+  \item \textbf{Solid (contact) conduction} $k_s(z)$ -- heat
+        transferred through direct grain-to-grain contact.
+        Depends on depth because density increases with depth.
+  \item \textbf{Radiative conduction} -- at high temperatures
+        grains exchange infrared radiation with each other.
+        This component grows steeply with temperature.
+\end{enumerate}
+
+The total conductivity is:
+
+\begin{equation}
+  k(T,z) = k_s(z)\,\left[1 + \chi\left(\frac{T}{T_{\mathrm{ref}}}\right)^3\right]
+  \label{eq:conductivity}
+\end{equation}
+
+where $T_{\mathrm{ref}} = 350$\,K and $\chi = 2.7$ is the
+\textbf{radiative conductivity parameter}
+(adjustable; higher $\chi$ means more radiative heat transfer).
+The $T^3$ dependence comes directly from Stefan-Boltzmann
+blackbody physics.
+
+\begin{plainbox}
+  \textbf{Why conductivity matters so much.}
+  The contact conductivity at the surface is
+  $k_s \approx 7\times10^{-4}$\,W/(m\,K) -- roughly 1000 times
+  less than solid rock.
+  This extreme insulation is why the surface temperature swings
+  so violently: heat cannot escape downward fast enough to damp
+  out the day--night cycle.
+\end{plainbox}
+
+\subsection{Specific heat capacity}
+
+Heat capacity $c(T)$ is how much energy (joules) it takes to heat
+1\,kg of regolith by 1\,K.
+It rises with temperature.
+The model uses the polynomial fit of Hemingway et al.\ (1973),
+measured on actual Apollo lunar samples:
+
+\begin{equation}
+  c(T) = -3.6125
+       + 2.7431\,T
+       + 2.3616\times10^{-3}\,T^2
+       - 1.234\times10^{-5}\,T^3
+       + 8.9093\times10^{-9}\,T^4
+  \quad\bigl[\mathrm{J\,kg^{-1}\,K^{-1}}\bigr]
+  \label{eq:heat_capacity}
+\end{equation}
+
+Typical values:
+$c(100\,\mathrm{K}) \approx 270$\,J/(kg\,K) at night;
+$c(390\,\mathrm{K}) \approx 1050$\,J/(kg\,K) at peak day.
+
+\subsection{Density models}
+
+\subsubsection{Model 1 -- Discrete layers (Apollo drill-core)}
+
+Apollo astronauts observed three distinct compaction layers.
+The boundary between Layer~1 and Layer~2 is $H$ (default 7\,cm):
+
+\begin{equation}
+  \rho_{\mathrm{disc}}(z) =
+  \begin{cases}
+    \rho_s
+      & 0 \le z < H \\[4pt]
+    \rho_s + \dfrac{1700 - \rho_s}{L_2 - H}\,(z - H)
+      & H \le z < L_2 \\[8pt]
+    1700 + 100\,\min\!\left(1,\;\dfrac{z - L_2}{2.80}\right)
+      & z \ge L_2
+  \end{cases}
+  \label{eq:density_discrete}
+\end{equation}
+
+where $\rho_s = 1100$\,kg/m$^3$ (surface density, adjustable),
+$L_2 = 0.20$\,m (20\,cm, fixed Layer~2/3 boundary).
+The Layer~1 depth $H \approx 7$\,cm and the Layer~2 reference density
+1700\,kg/m$^3$ are based on Apollo drill-core measurements
+(Carrier et al.\ 1991).
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Layer & Depth & Density & Description \\
+\midrule
+1 & 0 to $H$ ($\approx$7\,cm) & 1100\,kg/m$^3$ & Fluffy surface dust \\
+2 & $H$ to 20\,cm & 1100--1700\,kg/m$^3$ & Transitional (linear ramp) \\
+3 & $>$20\,cm & 1700--1800\,kg/m$^3$ & Consolidated regolith \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Model 2 -- Hayne et al.\ 2017 (exponential compaction)}
+
+Diviner satellite data suggest a smooth exponential increase
+in density with depth (Hayne et al.\ 2017):
+
+\begin{equation}
+  \rho_H(z) = \rho_d - (\rho_d - \rho_s)\,
+              \exp\!\left(-\frac{z}{H}\right)
+  \label{eq:density_hayne}
+\end{equation}
+
+with $\rho_s = 1100$\,kg/m$^3$, $\rho_d = 1800$\,kg/m$^3$,
+and $H = 0.07$\,m.
+Note that the global best-fit from Hayne et al.\ (2017) is $H = 0.06$\,m;
+we adopt $H = z_1 = 0.07$\,m so that both models share the same
+characteristic compaction depth, isolating the effect of density
+parameterisation rather than the choice of depth scale.
+
+Solid conductivity follows the same exponential shape:
+
+\begin{equation}
+  k_s^H(z) = k_{\mathrm{surf}}
+    + (k_{\mathrm{deep}} - k_{\mathrm{surf}})\,
+      \frac{\rho_H(z) - \rho_s}{\rho_d - \rho_s}
+  \label{eq:k_hayne}
+\end{equation}
+
+with $k_{\mathrm{surf}} = 7.4\times10^{-4}$\,W/(m\,K) and
+$k_{\mathrm{deep}} = 3.8\times10^{-3}$\,W/(m\,K) \citep{Hayne2017}.
+
+%% ============================================================
+\section{Boundary Conditions}
+
+The heat equation needs to know what happens at the top and
+bottom of the soil column.
+
+\subsection{Top boundary -- surface energy balance}
+
+At the surface ($z = 0$), energy arrives from the Sun and leaves
+as infrared radiation.
+These must balance:
+
+\begin{equation}
+  \underbrace{k(T_0,0)\,\frac{T_1 - T_0}{\Delta z}}_{\text{conduction up}}
+  +\;
+  \underbrace{Q_{\odot}}_{\text{solar in}}
+  =\;
+  \underbrace{\varepsilon\,\sigma\,T_0^4}_{\text{IR radiation out}}
+  \label{eq:surface_bc}
+\end{equation}
+
+where:
+\begin{itemize}[leftmargin=1.5em, itemsep=2pt]
+  \item $T_0$ -- unknown surface temperature (K)
+  \item $T_1$ -- temperature at the first sub-surface grid node
+  \item $\Delta z$ -- spacing between nodes (5\,mm)
+  \item $\varepsilon = 0.95$ -- \textbf{emissivity} (how efficiently
+        the surface radiates as a blackbody)
+  \item $\sigma = 5.6704\times10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ --
+        Stefan-Boltzmann constant
+\end{itemize}
+
+\begin{plainbox}
+  \textbf{Plain English.}
+  The surface temperature adjusts itself until the heat it radiates
+  away exactly balances the heat arriving from the Sun plus any
+  heat conducted up from below.
+  On the dayside the Sun dominates; at night the surface cools
+  rapidly because it keeps radiating but receives nothing back.
+\end{plainbox}
+
+Because of the $T_0^4$ term, equation~\eqref{eq:surface_bc} is
+nonlinear and cannot be solved directly.
+The model uses the \textbf{Newton-Raphson method}: an iterative
+approach that converges in typically 3--5 steps.
+
+\subsection{Bottom boundary -- basal heat flux}
+
+At 3\,m depth a small amount of heat flows upward from the Moon's
+hot interior.
+This was measured directly by the Apollo Heat Flow Experiment:
+
+\begin{equation}
+  Q_{\mathrm{basal}} = 18\,\mathrm{mW\,m}^{-2}
+  \label{eq:basal}
+\end{equation}
+
+Implemented as a Neumann (flux) condition:
+
+\begin{equation}
+  T_{\mathrm{bottom}} = T_{\mathrm{bottom}-1}
+    + \frac{Q_{\mathrm{basal}}\,\Delta z_{\mathrm{bottom}}}{k_{\mathrm{bottom}}}
+  \label{eq:bottom_bc}
+\end{equation}
+
+\begin{plainbox}
+  \textbf{Why 18\,mW/m$^2$ matters.}
+  This is tiny compared to peak solar flux ($\sim$1200\,W/m$^2$),
+  so it has almost no effect on surface temperatures.
+  However, it sets the temperature at depth ($>$1\,m), where
+  Apollo drills measured $\sim$253--257\,K.
+  Getting this right confirms that the deep physics is correct.
+\end{plainbox}
+
+%% ============================================================
+\section{Numerical Method -- Solving the Equations on a Computer}
+
+\subsection{The depth grid}
+
+The soil column is divided into discrete \textbf{nodes}
+(sample points at fixed depths):
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Region & Spacing & Reason \\
+\midrule
+0 to 10\,cm & 5\,mm & Steep temperature gradients near surface \\
+10\,cm to 3\,m & 20\,mm & Small gradients; coarser grid saves time \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This gives approximately 70--80 nodes total.
+
+\subsection{Explicit finite-difference time-stepping}
+
+At each interior node $i$, temperature is updated one time step
+at a time using the \textbf{explicit forward-Euler} scheme:
+
+\begin{equation}
+  T_i^{n+1} = T_i^n +
+  \frac{\Delta t}{\rho_i\,c_i\,\overline{\Delta z}_i}
+  \left[
+    k_{i+\frac{1}{2}}\,\frac{T_{i+1}^n - T_i^n}{\Delta z_i}
+    -
+    k_{i-\frac{1}{2}}\,\frac{T_i^n - T_{i-1}^n}{\Delta z_{i-1}}
+  \right]
+  \label{eq:fd}
+\end{equation}
+
+Superscripts $n$ and $n+1$ denote the current and next time step.
+Interface conductivities are arithmetic means:
+$k_{i+1/2} = \tfrac{1}{2}(k_i + k_{i+1})$.
+
+\subsection{Stability criterion}
+
+The explicit scheme is only stable when the time step is small
+enough.
+The \textbf{CFL stability condition} requires:
+
+\begin{equation}
+  \Delta t < \frac{1}{2}
+  \frac{\rho_{\max}\,c_{\max}\,(\Delta z_{\min})^2}{k_{\max}}
+  \label{eq:stability}
+\end{equation}
+
+The model uses a safety factor $f = 0.01$, giving
+$\Delta t \approx 100$\,s.
+Running 3 lunar days therefore requires $\sim$76{,}000 time steps
+(and takes roughly 15--30 seconds on a modern laptop).
+
+\subsection{Spin-up period}
+
+The simulation starts from a uniform temperature of 250\,K.
+After $\sim$2 lunar days the temperature field reaches a
+\textbf{periodic steady state} -- it repeats the same pattern
+every lunar day.
+The model runs for $N_{\mathrm{days}}$ days (default 3) and
+analysis is performed only on the \textbf{final} day,
+discarding the earlier spin-up.
+
+%% ============================================================
+\section{Complete Parameter Reference}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{>{\ttfamily}l l l p{5.5cm}}
+\toprule
+\textrm{Name} & Symbol & Value & Meaning \\
+\midrule
+\multicolumn{4}{l}{\itshape Physical constants (never change)} \\[2pt]
+S0         & $S_0$     & 1361\,W\,m$^{-2}$               & Solar constant at 1\,AU \\
+sigma      & $\sigma$  & $5.6704\!\times\!10^{-8}$\,W\,m$^{-2}$\,K$^{-4}$ & Stefan-Boltzmann \\
+Q\_basal   & $Q_b$     & 0.018\,W\,m$^{-2}$              & Basal heat flux (Apollo HFE) \\
+R\_MOON    & $R_{\Moon}$& 1{,}737{,}400\,m               & Moon mean radius \\
+LUNAR\_DAY & $T_{\odot}$& 2{,}551{,}392\,s               & 29.53 Earth days \\[6pt]
+\multicolumn{4}{l}{\itshape Adjustable model parameters} \\[2pt]
+SUNSCALE   & $S_{\rm sc}$ & 1.10                        & Solar flux multiplier \\
+ALBEDO     & $A$          & 0.09                        & Fraction of sunlight reflected \\
+EMISSIVITY & $\varepsilon$& 0.95                        & IR radiation efficiency \\
+CHI        & $\chi$       & 2.7                         & Radiative conductivity exponent \\
+H\_PARAM   & $H$          & 0.07\,m                     & Layer-1 thickness / scale height (Apollo drill data; Carrier et al.\ 1991) \\
+NDAYS      & --           & 3                           & Lunar days to simulate \\
+T\_INIT    & $T_0$        & 250\,K                      & Initial uniform temperature \\[6pt]
+\multicolumn{4}{l}{\itshape Regolith properties} \\[2pt]
+rho\_s     & $\rho_s$     & 1100\,kg\,m$^{-3}$          & Surface density (adjustable) \\
+rho\_d     & $\rho_d$     & 1800\,kg\,m$^{-3}$          & Deep density (Carrier et al.\ 1991) \\
+k\_surf    & $k_{\rm surf}$& $7.4\!\times\!10^{-4}$\,W/(m\,K) & Surface conductivity \\
+k\_deep    & $k_{\rm deep}$& $3.8\!\times\!10^{-3}$\,W/(m\,K) & Deep conductivity \citep{Hayne2017} \\
+T\_ref     & $T_{\rm ref}$ & 350\,K                    & Reference T for $\chi$ term \\[6pt]
+\multicolumn{4}{l}{\itshape Numerical grid} \\[2pt]
+DZ\_FINE   & $\Delta z_f$  & 5\,mm    & Node spacing near surface \\
+DZ\_COARSE & $\Delta z_c$  & 20\,mm   & Node spacing at depth \\
+DEPTH\_FINE& --            & 0.10\,m  & Switch depth fine/coarse \\
+DEPTH\_MAX & --            & 3.0\,m   & Total model depth \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ============================================================
+\section{Apollo Site Validation}
+
+The most important test of any model is whether it reproduces
+real measurements.
+Two Apollo missions placed thermometers at multiple depths in
+the regolith:
+
+\begin{center}
+\begin{tabular}{lllr}
+\toprule
+Mission & Coordinates & Drill depth & Measured T at depth \\
+\midrule
+Apollo 15 (1971) & 26.13°N, 3.63°E  & $\sim$2.0\,m & 252.8--253.3\,K \\
+Apollo 17 (1972) & 20.19°N, 30.77°E & $\sim$2.3\,m & 255.5--256.9\,K \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{plainbox}
+  \textbf{Why is Apollo 17 slightly warmer underground?}
+  It sits closer to the equator ($20.2^{\circ}$ vs $26.1^{\circ}$N)
+  and therefore receives more sunlight on average throughout the
+  year.
+  More solar input warms the deep soil.
+  At $\sim$2\,m depth the temperature no longer swings with the
+  day--night cycle; it reflects only the \emph{long-term average}
+  solar heating, which is latitude-dependent.
+\end{plainbox}
+
+The model accuracy is reported using two metrics:
+
+\begin{align}
+  \mathrm{RMSE} &= \sqrt{\frac{1}{N}\sum_{i=1}^{N}
+    \bigl(T_{\mathrm{model}}(z_i) - T_{\mathrm{Apollo}}(z_i)\bigr)^2}
+  \label{eq:rmse}\\[6pt]
+  \mathrm{Bias} &= \frac{1}{N}\sum_{i=1}^{N}
+    \bigl(T_{\mathrm{model}}(z_i) - T_{\mathrm{Apollo}}(z_i)\bigr)
+  \label{eq:bias}
+\end{align}
+
+A well-calibrated model achieves RMSE $< 1$\,K.
+Positive bias means the model runs hot; negative bias means cold.
+
+%% ============================================================
+\section{Guide to the Notebook Sections}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{>{\bfseries}c l p{8.2cm}}
+\toprule
+\S & Title & What to look for \\
+\midrule
+1  & Configuration         & All adjustable parameters live here. Edit this cell, then re-run Sections 2 onward. \\
+1b & Parameter Panel       & Sliders -- change parameters without editing any code; click Apply then re-run Section 3. \\
+2  & Load DEM              & Confirms the DEM file was found. Prints elevation, slope, sky-view factor of the target pixel. \\
+2b & Terrain Map           & Red star = target location. Contour lines show terrain shape around it. \\
+2c & Horizon Profile       & Tall brown wedges in a direction = a big hill blocking the sky there. A flat ring = open terrain. \\
+2d & Illumination Timeline & Gold = sunlit; grey = in topographic shadow; blue = night. Width of the gold band = length of the lunar daytime at this site. \\
+2e & Temperature Map       & Centre panel: estimated peak noon temperature. Right panel: day-night swing -- largest near the equator. \\
+3  & Run Model             & Runs the full simulation ($\sim$15--30\,s). Prints T range. If T\textsubscript{max} $>$ 400\,K the model runs hot -- try lowering SUNSCALE. \\
+4  & Diurnal Cycles        & Shows how quickly the surface heats and cools and how the heat wave damps out with depth. \\
+5  & Heatmap               & Red = hot (day), black = cold (night). Notice the pattern fades below $\sim$20\,cm depth. \\
+6  & Apollo Comparison     & Green dots = measured; coloured line = model. RMSE $< 1$\,K is an excellent fit. \\
+7  & Model Comparison      & How much does the choice of density model (discrete vs Hayne) matter? \\
+8  & Sensitivity Analysis  & Which parameter has the biggest impact on accuracy? Options include \texttt{rho\_surface}. \\
+9  & Single Point          & Run two different models at any list of locations side by side. \\
+10 & Batch Processing      & Process many locations at once and compare their surface temperatures. \\
+11 & Density Model Viewer  & Move the slider; the density-vs-depth profile redraws instantly. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ============================================================
+\section{Tuning Guide -- When the Model is Off}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{p{4.5cm} p{4.5cm} p{4.5cm}}
+\toprule
+\textbf{Symptom} & \textbf{Likely cause} & \textbf{Fix} \\
+\midrule
+Surface T\textsubscript{max} too low ($<$360\,K at equator) &
+  Not enough solar energy &
+  Increase SUNSCALE (try 1.05--1.15) or decrease ALBEDO \\
+Surface T\textsubscript{max} too high &
+  Too much energy absorbed &
+  Decrease SUNSCALE or increase ALBEDO \\
+Subsurface T too low (negative bias vs Apollo) &
+  Not enough mean energy input &
+  Increase SUNSCALE slightly \\
+Diurnal swing too large at depth &
+  Conductivity too low &
+  Increase CHI \\
+Density profile unrealistic &
+  H\_PARAM or rho\_surface wrong &
+  Adjust via Section 11 sliders, then re-run \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%% ============================================================
+\section{End-to-End Model Flow}
+
+The complete simulation runs in this order:
+
+\begin{enumerate}[leftmargin=1.8em, itemsep=5pt]
+  \item \textbf{Load DEM.}
+        Read the elevation grid (\texttt{LDEM\_4.IMG}).
+        Convert the target (lat, lon) to a pixel using
+        equation~\eqref{eq:pixel}.
+        Compute slope $\alpha$ and aspect $\beta$
+        (equations \ref{eq:gradient}--\ref{eq:slope_aspect}).
+
+  \item \textbf{Compute horizon profile.}
+        Scan outward in $N_{\varphi}=360$ directions.
+        Record $H(\varphi_k)$ at each azimuth
+        (equation~\ref{eq:horizon}).
+        Compute SVF (equation~\ref{eq:svf}).
+
+  \item \textbf{Initialise.}
+        Set $T(z,0) = 250$\,K everywhere.
+        Build the non-uniform depth grid ($\sim$75 nodes,
+        0 to 3\,m).
+
+  \item \textbf{Time loop} (repeated $\sim$76{,}000 times for 3 days).
+    \begin{enumerate}[leftmargin=1.4em, itemsep=3pt]
+      \item Compute $\delta(t)$, $h(t)$, and $\cos\theta_z$
+            (equations \ref{eq:declination}--\ref{eq:zenith}).
+      \item Check illumination using $H(\varphi_k)$
+            (equation~\ref{eq:illumination}).
+      \item If lit: compute $Q_{\odot}$
+            (equations \ref{eq:solar_flux}--\ref{eq:incidence}).
+      \item Solve surface energy balance for $T_0$ via
+            Newton-Raphson (equation~\ref{eq:surface_bc}).
+      \item Update all interior nodes using finite differences
+            (equation~\ref{eq:fd}).
+      \item Apply bottom boundary condition
+            (equation~\ref{eq:bottom_bc}).
+    \end{enumerate}
+
+  \item \textbf{Discard spin-up.}
+        Keep only the final lunar day of data.
+
+  \item \textbf{Post-process.}
+        Extract T\textsubscript{min}, T\textsubscript{max},
+        T\textsubscript{mean}, and amplitude at each depth.
+        Compute RMSE and bias vs Apollo data if applicable.
+
+  \item \textbf{Plot.}
+        Generate all figures automatically.
+\end{enumerate}
+
+%% ============================================================
+\section{References}
+
+\begin{itemize}[leftmargin=1.5em, itemsep=5pt]
+
+  \item Carrier, W.\,D., III, Olhoeft, G.\,R., \& Mendell, W.\ (1991).
+        ``Physical Properties of the Lunar Surface.''
+        In \textit{Lunar Sourcebook: A User's Guide to the Moon},
+        G.\,H.\ Heiken, D.\,T.\ Vaniman, \& B.\,M.\ French (eds.),
+        Cambridge University Press, pp.\ 475--594.
+
+  \item Hayne, P.\,O., et al.\ (2017).
+        ``Global Regolith Thermophysical Properties of the Moon
+        from the Diviner Lunar Radiometer Experiment.''
+        \textit{Journal of Geophysical Research: Planets},
+        122, 2371--2400.
+        \href{https://doi.org/10.1002/2017JE005387}
+             {doi:10.1002/2017JE005387}
+
+  \item Hemingway, B.\,S., Robie, R.\,A., \& Wilson, W.\,H.\
+        (1973). ``Specific Heats of Lunar Soils, Basalt, and
+        Breccias from the Apollo 14, 15, and 16 Landing Sites.''
+        \textit{Proc.\ Fourth Lunar Science Conference}, 3,
+        2481--2487.
+
+  \item Langseth, M.\,G., Keihm, S.\,J., \& Peters, K.\ (1976).
+        ``Revised Lunar Heat-Flow Values.''
+        \textit{Proc.\ Seventh Lunar Science Conference},
+        3143--3171.
+
+  \item Smith, D.\,E., et al.\ (2017).
+        LRO LOLA Global Digital Elevation Model V3.0.
+        \textit{NASA Planetary Data System}.
+        Dataset ID: \texttt{LRO-L-LOLA-4-GDR-V1.0}.
+
+  \item Vasavada, A.\,R., et al.\ (2012).
+        ``Lunar Equatorial Surface Temperatures and Regolith
+        Properties from the Diviner Lunar Radiometer Experiment.''
+        \textit{Journal of Geophysical Research: Planets},
+        117, E00H18.
+
+\end{itemize}
+
+%% ============================================================
+\appendix
+\section{Quick-Reference: All Key Equations}
+
+\renewcommand{\arraystretch}{1.6}
+\begin{center}
+\begin{tabular}{p{4.8cm} p{9cm}}
+\toprule
+\textbf{What it computes} & \textbf{Equation} \\
+\midrule
+Solar declination &
+  $\delta = 1.54^{\circ}\sin\!\bigl(2\pi t/27.3\,\mathrm{days}\bigr)$ \\
+Hour angle &
+  $h = 2\pi t / T_{\odot} + \lambda_{\rm rad}$ \\
+Solar zenith angle &
+  $\cos\theta_z = \sin\phi\sin\delta + \cos\phi\cos\delta\cos h$ \\
+Incidence on slope &
+  $\cos\theta_i = \cos\theta_z\cos\alpha
+   + \sin\theta_z\sin\alpha\cos(\beta-\theta_{az})$ \\
+Absorbed solar flux &
+  $Q_{\odot} = S_{\rm sc}(1-A)\,S_0\cos\theta_i$ \\
+Hayne density &
+  $\rho = 1800 - 700\exp(-z/H)$\quad [kg\,m$^{-3}$] \\
+Total conductivity &
+  $k = k_s(z)\bigl[1 + \chi(T/350)^3\bigr]$\quad [W\,m$^{-1}$K$^{-1}$] \\
+Heat capacity &
+  $c = -3.61 + 2.74T + \cdots$\quad [J\,kg$^{-1}$\,K$^{-1}$] \\
+Heat conduction PDE &
+  $\rho c\,\partial T/\partial t
+   = \partial/\partial z\bigl[k\,\partial T/\partial z\bigr]$ \\
+Surface energy balance &
+  $k(T_1-T_0)/\Delta z + Q_{\odot} = \varepsilon\sigma T_0^4$ \\
+Bottom BC &
+  $T_N = T_{N-1} + Q_b\,\Delta z / k$ \\
+Sky-view factor &
+  $\mathrm{SVF} = N^{-1}\sum_k\cos^3 H(\varphi_k)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

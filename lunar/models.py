@@ -31,10 +31,11 @@ be used when sweeping H during sensitivity analysis.
 import numpy as np
 from numba import njit
 
-# ── Module-level globals for dynamic H-parameter ──────────────────────────────
-# Use set_hayne_h() / set_layer1_h() to change these before model runs.
-_HAYNE_H     = 0.07   # Hayne exponential scale height (m) — default 7 cm
-_H_LAYER1    = 0.07   # Discrete Layer-1 boundary (m)      — default 7 cm
+# ── Module-level globals for dynamic parameters ───────────────────────────────
+# Use the set_*() functions below to change these before model runs.
+_HAYNE_H     = 0.07    # Hayne exponential scale height (m) — default 7 cm
+_H_LAYER1    = 0.07    # Discrete Layer-1 boundary (m)      — default 7 cm
+_RHO_SURFACE = 1100.0  # Top-layer surface density (kg/m³)  — default 1100
 
 
 def set_hayne_h(h_m: float):
@@ -49,6 +50,21 @@ def set_layer1_h(h_m: float):
     _H_LAYER1 = float(h_m)
 
 
+def set_rho_surface(rho_kg_m3: float):
+    """
+    Set the top-layer regolith density (kg/m³) for pure-Python model runs.
+
+    Typical range: 800 (very fluffy, freshly disturbed) – 1400 (compact).
+    Apollo drill-core measurements suggest ~1100 kg/m³ for the uppermost dust.
+
+    Note: the Numba-compiled solver uses a compile-time constant (1100 kg/m³).
+    This setter affects the pure-Python functions (density_*_py) used for
+    sensitivity sweeps and the interactive density-profile viewer.
+    """
+    global _RHO_SURFACE
+    _RHO_SURFACE = float(rho_kg_m3)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MODEL 1 — DISCRETE LAYERS  (Apollo drill-core based)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -56,10 +72,32 @@ def set_layer1_h(h_m: float):
 #   Layer 1 : 0 → _H_LAYER1      — fluffy surface dust (ρ = 1100 kg/m³)
 #   Layer 2 : _H_LAYER1 → 20 cm  — transitional compaction (linear ramp)
 #   Layer 3 : > 20 cm            — consolidated regolith (slow ramp)
+#
+# Conductivity values:
+#   k_surface = 1.0e-3 W/m/K — unconsolidated dust; from Langseth et al. 1976
+#               (Apollo 15 & 17 HFE fit to near-surface thermal gradient)
+#   k_deep    = 1.2e-2 W/m/K — consolidated regolith at > 20 cm.
+#               Derived from the Apollo heat flow measurement itself:
+#               k = Q_basal / (dT/dz)  ≈  0.018 W/m² / 1.5 K/m  ≈  1.2e-2 W/m/K
+#               where dT/dz ≈ 1.5 K/m is the measured deep gradient (Langseth 1973).
+#
+# IMPORTANT — calibration basis differs between models:
+#   Discrete model k_deep is calibrated to Apollo HFE geothermal gradient data
+#   (steady-state heat flow at 0.3–2.3 m depth).
+#   Hayne model k_deep = 3.8e-3 is calibrated to Diviner surface brightness
+#   temperatures (diurnal skin depth, topmost ~20 cm).
+#   These represent different depth ranges and physical processes; the factor
+#   of ~3 difference between models is physically meaningful, not an error.
+#   Use the discrete model when comparing against Apollo deep-temperature data;
+#   use the Hayne model when comparing against Diviner surface observations.
 
 @njit(cache=True, fastmath=True, inline='always')
 def density_discrete(z):
-    """Density (kg/m³) for the discrete-layer model."""
+    """Density (kg/m³) for the discrete-layer model.
+
+    Based on Apollo 15 and 17 drill-core measurements (Carrier et al. 1991,
+    Lunar Sourcebook, Table 9.1).
+    """
     H     = 0.07   # Layer-1 boundary — COMPILE-TIME constant
     L2    = 0.20   # Layer-2 boundary (fixed at 20 cm)
     if z < H:
@@ -72,7 +110,13 @@ def density_discrete(z):
 
 @njit(cache=True, fastmath=True, inline='always')
 def k_solid_discrete(z):
-    """Solid (contact) thermal conductivity (W/m/K) for discrete-layer model."""
+    """Solid (contact) thermal conductivity (W/m/K) for discrete-layer model.
+
+    Surface value (1e-3) from Langseth et al. 1976 HFE analysis.
+    Deep value (1.2e-2) derived from measured Apollo heat flow Q ≈ 18–21 mW/m²
+    and observed deep temperature gradient dT/dz ≈ 1.5 K/m (Langseth 1973).
+    Calibrated to geothermal gradient data, not surface thermal inertia.
+    """
     H  = 0.07
     L2 = 0.20
     if z < H:
@@ -94,22 +138,43 @@ def k_solid_discrete(z):
 
 @njit(cache=True, fastmath=True, inline='always')
 def density_hayne(z):
-    """Density (kg/m³) for the Hayne 2017 exponential model (H = 7 cm fixed)."""
+    """Density (kg/m³) for the Hayne 2017 exponential model (H = 7 cm fixed).
+
+    ρ(z) = ρ_d − (ρ_d − ρ_s) · exp(−z / H)
+    Reference: Hayne et al. 2017, JGR Planets, doi:10.1002/2017JE005387
+
+    H=0.07 m matches the discrete model's Layer-1 depth for a fair comparison;
+    the Hayne et al. (2017) global best-fit from Diviner is H=0.06 m.
+    """
     rho_s = 1100.0
     rho_d = 1800.0
-    H     = 0.07
+    H     = 0.07  # H=0.07 m here; Hayne 2017 global best-fit is H=0.06 m
     return rho_d - (rho_d - rho_s) * np.exp(-z / H)
 
 
 @njit(cache=True, fastmath=True, inline='always')
 def k_solid_hayne(z):
-    """Solid conductivity (W/m/K) for Hayne 2017 model."""
+    """Solid conductivity (W/m/K) for Hayne 2017 model.
+
+    k_surf = 7.4e-4 W/m/K, k_deep = 3.8e-3 W/m/K from Hayne et al. 2017
+    Table 1 (fit to Diviner surface brightness temperatures, diurnal skin
+    depth regime).
+
+    CALIBRATION NOTE: these k values are fit to Diviner surface observations
+    (topmost ~20 cm, diurnal timescale) rather than to the Apollo deep
+    geothermal gradient.  The asymptotic k_deep = 3.8e-3 W/m/K implies a
+    temperature gradient dT/dz = Q_basal / k ≈ 4.7 K/m at depth, which is
+    steeper than the observed Apollo gradient (~1.5 K/m).  This reflects the
+    different calibration basis of the two models — use the discrete model for
+    geothermal comparisons and the Hayne model for surface thermal inertia
+    comparisons with Diviner data.
+    """
     rho_s = 1100.0
     rho_d = 1800.0
     H     = 0.07
     rho   = rho_d - (rho_d - rho_s) * np.exp(-z / H)
-    k_surf = 7.4e-4   # W/m/K at surface   (from Hayne et al. 2017)
-    k_deep = 3.4e-3   # W/m/K at ~1 m depth
+    k_surf = 7.4e-4   # W/m/K at surface   (Hayne et al. 2017, Table 1)
+    k_deep = 3.8e-3   # W/m/K at ~1 m depth (Hayne et al. 2017, Table 1)
     frac   = (rho - rho_s) / (rho_d - rho_s)
     return k_surf + (k_deep - k_surf) * frac
 
@@ -198,10 +263,15 @@ def get_k_solid(z, model_id, H_param):
 def heat_capacity(T):
     """
     Specific heat capacity (J/kg/K) — temperature-dependent polynomial.
-    From Hemingway et al. (1973).
+
+    Reference: Hemingway et al. (1973), Lunar Sci. Conf., Table 1.
+    Valid for T ∈ [20, 420] K; positive throughout this range.
+    Returns a minimum of 10 J/kg/K as a physical guard below ~10 K.
     """
     c = np.array([-3.6125, 2.7431, 2.3616e-3, -1.234e-5, 8.9093e-9])
-    return c[0] + T * (c[1] + T * (c[2] + T * (c[3] + T * c[4])))
+    cp = c[0] + T * (c[1] + T * (c[2] + T * (c[3] + T * c[4])))
+    # Guard: polynomial can theoretically go negative below ~10 K
+    return cp if cp > 10.0 else 10.0
 
 
 @njit(cache=True, fastmath=True, inline='always')
@@ -234,10 +304,11 @@ def thermal_conductivity(T, z, chi, model_id, H_param):
 # at runtime inside @njit.  These plain-Python versions read the module
 # globals (_HAYNE_H, _H_LAYER1) on every call.
 
-def density_hayne_py(z, H=None):
-    """Pure-Python Hayne density (reads _HAYNE_H if H is None)."""
-    h = H if H is not None else _HAYNE_H
-    rho_s, rho_d = 1100.0, 1800.0
+def density_hayne_py(z, H=None, rho_surface=None):
+    """Pure-Python Hayne density (reads _HAYNE_H / _RHO_SURFACE if not given)."""
+    h     = H            if H            is not None else _HAYNE_H
+    rho_s = rho_surface  if rho_surface  is not None else _RHO_SURFACE
+    rho_d = 1800.0
     return rho_d - (rho_d - rho_s) * np.exp(-z / h)
 
 
@@ -246,18 +317,19 @@ def k_solid_hayne_py(z, H=None):
     h = H if H is not None else _HAYNE_H
     rho_s, rho_d = 1100.0, 1800.0
     rho   = rho_d - (rho_d - rho_s) * np.exp(-z / h)
-    k_surf, k_deep = 7.4e-4, 3.4e-3
+    k_surf, k_deep = 7.4e-4, 3.8e-3   # k_deep from Hayne et al. 2017, Table 1
     return k_surf + (k_deep - k_surf) * (rho - rho_s) / (rho_d - rho_s)
 
 
-def density_discrete_py(z, H=None):
-    """Pure-Python discrete density (reads _H_LAYER1 if H is None)."""
-    h  = H if H is not None else _H_LAYER1
-    L2 = 0.20
+def density_discrete_py(z, H=None, rho_surface=None):
+    """Pure-Python discrete density (reads _H_LAYER1 / _RHO_SURFACE if not given)."""
+    h     = H            if H            is not None else _H_LAYER1
+    rho_s = rho_surface  if rho_surface  is not None else _RHO_SURFACE
+    L2    = 0.20
     if z < h:
-        return 1100.0
+        return rho_s
     elif z < L2:
-        return 1100.0 + (1700.0 - 1100.0) * (z - h) / (L2 - h)
+        return rho_s + (1700.0 - rho_s) * (z - h) / (L2 - h)
     else:
         return 1700.0 + (1800.0 - 1700.0) * min(1.0, (z - L2) / 2.80)
 
