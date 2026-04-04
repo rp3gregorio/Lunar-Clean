@@ -315,7 +315,10 @@ def get_probe_diurnal_cycle(site_name, n_lunar_days=5):
             probe_epochs.append(None)
             continue
         sel_end   = float(win_end)
-        sel_start = max(float(win_start), sel_end - n_lunar_days * LUNAR_DAY_DAYS)
+        if n_lunar_days is None:
+            sel_start = float(win_start)
+        else:
+            sel_start = max(float(win_start), sel_end - n_lunar_days * LUNAR_DAY_DAYS)
         probe_epochs.append((probe, all_t0, sel_start, sel_end))
 
     # Common UTC reference = earliest sel_start across all probes (absolute Unix days)

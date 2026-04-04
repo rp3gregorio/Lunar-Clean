@@ -270,6 +270,14 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
     The three curves are zero-mean normalised (T − <T>) so amplitude and phase
     can be compared without absolute-temperature offsets.
 
+    X-axis: Local Lunar Time (LLT) in hours [0, day_h] where
+        0 / day_h = local midnight, day_h/2 = local noon.
+    Phase alignment: Apollo data, discrete model, and Hayne model are each
+        shifted independently so that their surface-temperature peak lands at
+        noon (day_h/2).  A SINGLE shift per model is computed from the
+        highest-amplitude (shallowest active) depth and applied to ALL depths,
+        preserving the physically real depth-dependent thermal phase lags.
+
     Parameters
     ----------
     probe_diurnal : dict from hfe_loader.get_probe_diurnal_cycle() —
@@ -290,8 +298,6 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
     -------
     matplotlib.figure.Figure
     """
-    import datetime as _dt
-    from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
     from lunar.constants import LUNAR_DAY
 
     if not probe_diurnal:
@@ -299,7 +305,16 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
         ax.set_title('No probe diurnal data available')
         return fig
 
-    day_h = LUNAR_DAY / 3600.0
+    day_h = LUNAR_DAY / 3600.0   # ≈ 708.7 h
+
+    # ── LLT landmark hours (equatorial approximation) ────────────────────────
+    # Midnight = 0 h, Sunrise = day_h/4, Noon = day_h/2,
+    # Sunset = 3*day_h/4, Midnight = day_h
+    _llt_midnight1 = 0.0
+    _llt_sunrise   = day_h / 4.0
+    _llt_noon      = day_h / 2.0
+    _llt_sunset    = day_h * 3.0 / 4.0
+    _llt_midnight2 = day_h
 
     # ── Filter to depths with a meaningful diurnal signal ────────────────────
     def _amp(d_cm):
@@ -327,75 +342,134 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
     if figsize is None:
-        figsize = (5.5 * ncols, 4.0 * nrows)
+        figsize = (5.5 * ncols, 4.2 * nrows)
     fig, axes = plt.subplots(nrows, ncols, figsize=figsize,
                               sharex=False, squeeze=False)
     axes_flat = axes.flatten()
 
-    # Helper: extract zero-mean model anomaly at depth depth_m
+    # ── Compute LLT shift for a single data source ───────────────────────────
+    # Finds the global shift (hours) that maps the surface temperature peak
+    # to local noon (day_h/2).  Computed ONCE from the highest-amplitude depth
+    # and applied identically to all depths.
+    def _compute_llt_shift(time_h_arr, T_arr, n_bins=96):
+        """Return shift_h such that (time_h + shift_h) % day_h puts peak at noon."""
+        edg  = np.linspace(0, day_h, n_bins + 1)
+        mg   = 0.5 * (edg[:-1] + edg[1:])
+        bidx = np.clip(np.searchsorted(edg, time_h_arr, side='right') - 1,
+                       0, n_bins - 1)
+        bm   = np.full(n_bins, np.nan)
+        for b in range(n_bins):
+            vv = np.asarray(T_arr)[bidx == b]
+            if len(vv) >= 3:
+                bm[b] = np.mean(vv)
+        if (~np.isnan(bm)).sum() < 4:
+            return 0.0
+        t_peak = float(mg[np.nanargmax(bm)])
+        # Wrap shift to (−day_h/2, +day_h/2)
+        return ((day_h / 2.0 - t_peak + day_h / 2.0) % day_h) - day_h / 2.0
+
+    # Use the highest-amplitude depth to find the shift for each source
+    _ref_d_cm = max(probe_depths_cm, key=_amp)
+    _ref_entry = probe_diurnal[_ref_d_cm]
+
+    # Apollo LLT shift — from binned anomaly of highest-amp depth
+    _apollo_llt_shift = _compute_llt_shift(
+        _ref_entry['time_h'], _ref_entry['T_anom'])
+
+    # Discrete model LLT shift — from absolute temperature (peak = warmest point)
+    _model_llt_shift = 0.0
+    if cycles_model:
+        _dk = _closest_model_depth(_ref_d_cm / 100.0, cycles_model)
+        if _dk is not None:
+            _tm_t = np.asarray(cycles_model[_dk]['time_h'])
+            _tm_T = np.asarray(cycles_model[_dk]['temperature'], dtype=float)
+            _model_llt_shift = _compute_llt_shift(_tm_t, _tm_T)
+
+    # Hayne model LLT shift — same method, independently
+    _hayne_llt_shift = 0.0
+    if cycles_hayne:
+        _dkh = _closest_model_depth(_ref_d_cm / 100.0, cycles_hayne)
+        if _dkh is not None:
+            _th_t = np.asarray(cycles_hayne[_dkh]['time_h'])
+            _th_T = np.asarray(cycles_hayne[_dkh]['temperature'], dtype=float)
+            _hayne_llt_shift = _compute_llt_shift(_th_t, _th_T)
+
+    # ── Helper: plot model curve on LLT axis, seam-free ─────────────────────
+    # The model output is PERIODIC with period day_h.  Instead of splitting at
+    # the wrap seam (which always leaves a visual step), we:
+    #   1. Tile the (t, A) arrays three times: [t-day_h, t, t+day_h]
+    #   2. Sort the extended array — this spans [-day_h, 2*day_h] continuously
+    #   3. Interpolate onto a dense uniform grid strictly within [0, day_h]
+    #   4. Plot a single unbroken line — no seam, no step
+    # This works because the periodicity means the tiled copies are identical
+    # in shape; the interpolation simply picks values smoothly across the join.
+    def _plot_model_periodic(ax, t_raw, A_raw, shift_h, color, ls, lw, label,
+                             n_uniform=500):
+        """Plot a phase-shifted periodic model curve with no wrap seam.
+
+        Root cause of step artefacts: model output covers ~one lunar day.
+        After % day_h the sorted LLT array has an interior seam where the
+        anomaly jumps by the secular drift of mean temperature (convergence
+        artefact, largest at deep unconverged depths).
+
+        Fix: locate the seam via backward jumps in original time, remove the
+        step there, then tile ×3 + interpolate for a smooth continuous curve.
+        """
+        llt = (np.asarray(t_raw, dtype=float) + shift_h) % day_h
+        A   = np.asarray(A_raw, dtype=float)
+        t_r = np.asarray(t_raw, dtype=float)
+        s     = np.argsort(llt)
+        llt_s = llt[s]
+        A_s   = A[s].copy()
+        t_r_s = t_r[s]
+        if len(t_r_s) > 1:
+            # Seam = where original time has its largest backward jump
+            seam = int(np.argmax(np.abs(np.diff(t_r_s)))) + 1
+            A_s[seam:] -= (A_s[seam] - A_s[seam - 1])
+        # Remove residual endpoint gap
+        A_s -= np.linspace(0, A_s[-1] - A_s[0], len(A_s))
+        # Tile ×3 and interpolate onto uniform grid
+        t_ext = np.concatenate([llt_s - day_h, llt_s, llt_s + day_h])
+        A_ext = np.concatenate([A_s, A_s, A_s])
+        sort  = np.argsort(t_ext)
+        t_uni = np.linspace(0.0, day_h, n_uniform)
+        A_uni = np.interp(t_uni, t_ext[sort], A_ext[sort])
+        ax.plot(t_uni, A_uni, lw=lw, color=color, ls=ls, zorder=5, label=label)
+
+    # ── Helper: zero-mean model anomaly at a given depth ────────────────────
     def _model_anom(cycles, depth_m):
         if not cycles:
             return None, None
         d_key = _closest_model_depth(depth_m, cycles)
         if d_key is None:
             return None, None
-        t_h = cycles[d_key]['time_h']
+        t_h = np.asarray(cycles[d_key]['time_h'])
         T   = np.asarray(cycles[d_key]['temperature'], dtype=float)
         return t_h, T - float(np.mean(T))
 
-    # ── Compute ONE global phase shift (model → data) from shallowest depth ─────
-    # The model's t=0 is an arbitrary simulation start; its local noon occurs at
-    # t ≈ day_h/2.  The Apollo ref_utc is a real calendar date at a different
-    # solar angle.  Cross-correlation finds the offset to add to model hours so
-    # its diurnal peak lands on the same UTC date as the data peak.
-    _global_shift_h = 0.0
-    if probe_depths_cm and cycles_model:
-        _rd   = probe_depths_cm[0]          # shallowest active depth
-        _re   = probe_diurnal[_rd]
-        _nbg  = 48
-        _edg  = np.linspace(0, day_h, _nbg + 1)
-        _mg   = 0.5 * (_edg[:-1] + _edg[1:])
-        _bidx = np.clip(np.searchsorted(_edg, _re['time_h'], side='right') - 1,
-                        0, _nbg - 1)
-        _bm   = np.full(_nbg, np.nan)
-        for _b in range(_nbg):
-            _vv = _re['T_anom'][_bidx == _b]
-            if len(_vv) >= 3:
-                _bm[_b] = np.mean(_vv)
-        _dk = _closest_model_depth(_rd / 100.0, cycles_model)
-        if _dk is not None:
-            _global_shift_h = _align_model_to_obs(
-                _mg, _bm,
-                cycles_model[_dk]['time_h'],
-                cycles_model[_dk]['temperature'],
-                day_h,
-            )
-
-    _leg_seen = {}   # {label → handle} — deduplicated across panels for shared legend
+    _leg_seen = {}   # {label → handle} — deduplicated for shared legend
 
     for ax_idx, d_cm in enumerate(probe_depths_cm):
-        ax = axes_flat[ax_idx]
-        entry  = probe_diurnal[d_cm]
+        ax    = axes_flat[ax_idx]
+        entry = probe_diurnal[d_cm]
         stype  = entry.get('stype', 'TG')
         sensor = entry.get('sensor', f'{d_cm} cm')
         t_ph   = entry['time_h']
         T_anom = entry['T_anom']
 
-        # Convert phase hours to UTC datetimes if ref_utc is available
-        ref_utc = entry.get('ref_utc')
-        if ref_utc is not None:
-            t_utc_raw = [ref_utc + _dt.timedelta(hours=float(h)) for h in t_ph]
-        else:
-            t_utc_raw = list(t_ph)   # fallback: plain hours
+        # ── Apollo data → LLT ─────────────────────────────────────────────
+        t_llt = (np.asarray(t_ph, dtype=float) + _apollo_llt_shift) % day_h
 
-        # ── Probe data ───────────────────────────────────────────────────────
-        # Thin grey scatter for individual readings, bold marker for binned mean
-        # Bin into ~24 equal-width bins (one per ~30-hour bin ≈ 1 lunar "hour")
+        # Raw scatter
+        ax.scatter(t_llt, T_anom, s=1, alpha=0.08, color='#888888',
+                   rasterized=True, zorder=1)
+
+        # Binned mean ± std in LLT space
         n_bins    = 48
         bin_edges = np.linspace(0, day_h, n_bins + 1)
         bin_mids  = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-        bin_idx   = np.searchsorted(bin_edges, t_ph, side='right') - 1
-        bin_idx   = np.clip(bin_idx, 0, n_bins - 1)
+        bin_idx   = np.clip(np.searchsorted(bin_edges, t_llt, side='right') - 1,
+                            0, n_bins - 1)
         bin_mean  = np.full(n_bins, np.nan)
         bin_std   = np.full(n_bins, np.nan)
         for b in range(n_bins):
@@ -404,89 +478,77 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
                 bin_mean[b] = np.mean(vals)
                 bin_std[b]  = np.std(vals)
 
-        # Convert bin_mids to UTC datetimes if possible
-        if ref_utc is not None:
-            bin_mids_utc = [ref_utc + _dt.timedelta(hours=float(h))
-                            for h in bin_mids]
-        else:
-            bin_mids_utc = list(bin_mids)
-
-        # Raw scatter (very light)
-        ax.scatter(t_utc_raw, T_anom, s=1, alpha=0.08, color='#888888',
-                   rasterized=True, zorder=1)
-        # Binned mean ± std
         good = ~np.isnan(bin_mean)
         mk   = _STYPE_MARKER.get(stype, 'o')
         ms   = _STYPE_SIZE.get(stype, 5)
-        good_mids = [bin_mids_utc[i] for i in range(n_bins) if good[i]]
-        ax.errorbar(good_mids, bin_mean[good], yerr=bin_std[good],
+        ax.errorbar(bin_mids[good], bin_mean[good], yerr=bin_std[good],
                     fmt=mk, markersize=ms, color='#2C3E50',
                     ecolor='#888888', elinewidth=0.8, capsize=2,
                     linewidth=1.2, zorder=4,
                     label=f'Apollo {_STYPE_LABEL.get(stype, stype)}')
 
-        # ── Model 1 (user's model) — phase-shifted to align with Apollo UTC ─────
-        # Wrap time modulo day_h after shifting so the model stays within the
-        # same [ref_utc, ref_utc+day_h] window as the data.  Without wrapping,
-        # a large positive shift moves the model's peak outside the data window.
+        # ── Discrete model curve (all depths use the same _model_llt_shift) ─
         t1, A1 = _model_anom(cycles_model, d_cm / 100.0)
         if t1 is not None:
-            _t1w   = (np.asarray(t1) + _global_shift_h) % day_h
-            _s1    = np.argsort(_t1w)
-            _A1s   = np.asarray(A1)[_s1]
-            if ref_utc is not None:
-                t1_utc = [ref_utc + _dt.timedelta(hours=float(h))
-                          for h in _t1w[_s1]]
-            else:
-                t1_utc = list(_t1w[_s1])
-            ax.plot(t1_utc, _A1s, lw=2.0, color='#2471A3', zorder=5,
-                    label=model_name)
+            _plot_model_periodic(ax, t1, A1, _model_llt_shift,
+                                 '#2471A3', '-', 2.0, model_name)
 
-        # ── Model 2 (Hayne) — same global shift ──────────────────────────────
+        # ── Hayne model curve (all depths use the same _hayne_llt_shift) ────
         t2, A2 = _model_anom(cycles_hayne, d_cm / 100.0)
         if t2 is not None:
-            _t2w   = (np.asarray(t2) + _global_shift_h) % day_h
-            _s2    = np.argsort(_t2w)
-            _A2s   = np.asarray(A2)[_s2]
-            if ref_utc is not None:
-                t2_utc = [ref_utc + _dt.timedelta(hours=float(h))
-                          for h in _t2w[_s2]]
-            else:
-                t2_utc = list(_t2w[_s2])
-            ax.plot(t2_utc, _A2s, lw=2.0, color='#E67E22', ls='--', zorder=5,
-                    label=hayne_name)
+            _plot_model_periodic(ax, t2, A2, _hayne_llt_shift,
+                                 '#E67E22', '--', 2.0, hayne_name)
 
-        # ── Night shading ────────────────────────────────────────────────────
-        half = day_h / 2.0
-        if ref_utc is not None:
-            night_start_1 = ref_utc
-            night_end_1   = ref_utc + _dt.timedelta(hours=half * 0.48)
-            night_start_2 = ref_utc + _dt.timedelta(hours=half * 1.52)
-            night_end_2   = ref_utc + _dt.timedelta(hours=day_h)
-            ax.axvspan(night_start_1, night_end_1,
-                       color='#1a1a2e', alpha=0.07, zorder=0)
-            ax.axvspan(night_start_2, night_end_2,
-                       color='#1a1a2e', alpha=0.07, zorder=0)
-        else:
-            ax.axvspan(0,           half * 0.48, color='#1a1a2e', alpha=0.07, zorder=0)
-            ax.axvspan(half * 1.52, day_h,       color='#1a1a2e', alpha=0.07, zorder=0)
+        # ── Night / day shading ──────────────────────────────────────────────
+        # Night spans midnight→sunrise (left) and sunset→midnight (right)
+        ax.axvspan(_llt_midnight1, _llt_sunrise,
+                   color='#1a1a2e', alpha=0.10, zorder=0, label='_nolegend_')
+        ax.axvspan(_llt_sunset, _llt_midnight2,
+                   color='#1a1a2e', alpha=0.10, zorder=0, label='_nolegend_')
+
+        # ── Sunrise / noon / sunset vertical lines ──────────────────────────
+        for _xv, _lc, _ll in [
+            (_llt_sunrise, '#E67E22', 'Sunrise'),
+            (_llt_noon,    '#F39C12', 'Noon'),
+            (_llt_sunset,  '#E67E22', 'Sunset'),
+        ]:
+            ax.axvline(_xv, color=_lc,
+                       lw=1.5 if _lc == '#F39C12' else 1.0,
+                       ls='-' if _lc == '#F39C12' else '--',
+                       alpha=0.55, zorder=2)
+            # Label pinned to top of panel using axis-fraction coordinates
+            # so it stays inside regardless of the y data range
+            ax.annotate(_ll,
+                        xy=(_xv, 1.0), xycoords=('data', 'axes fraction'),
+                        ha='center', va='top', fontsize=6.5,
+                        color=_lc, clip_on=False,
+                        xytext=(0, -2), textcoords='offset points')
+
         ax.axhline(0, color='#888', lw=0.7, ls=':')
+        ax.set_xlim(_llt_midnight1, _llt_midnight2)
+
+        # ── X-axis ticks with LLT labels ─────────────────────────────────────
+        _ticks  = [_llt_midnight1, _llt_sunrise, _llt_noon,
+                   _llt_sunset,    _llt_midnight2]
+        _labels = [
+            f'Midnight\n(0h)',
+            f'Sunrise\n({_llt_sunrise:.0f}h)',
+            f'Noon\n({_llt_noon:.0f}h)',
+            f'Sunset\n({_llt_sunset:.0f}h)',
+            f'Midnight\n({_llt_midnight2:.0f}h)',
+        ]
+        ax.set_xticks(_ticks)
+        ax.set_xticklabels(_labels, fontsize=7.5)
 
         ax.set_title(f'{d_cm} cm  —  {sensor}', fontsize=10, weight='bold')
         if ax_idx % ncols == 0:
             ax.set_ylabel('T anomaly (K)', fontsize=9)
         if ax_idx >= (nrows - 1) * ncols:
-            ax.set_xlabel('UTC Date' if ref_utc is not None else 'Hours within lunar day',
-                          fontsize=9)
-        if ref_utc is not None:
-            ax.xaxis_date()
-            loc = AutoDateLocator(minticks=3, maxticks=5)
-            ax.xaxis.set_major_locator(loc)
-            ax.xaxis.set_major_formatter(ConciseDateFormatter(loc))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=30, ha='right',
-                     fontsize=8)
+            ax.set_xlabel('Local Lunar Time  (0 = Midnight · 0.5 = Noon · 1 = Midnight)',
+                          fontsize=8)
+
         for _h, _l in zip(*ax.get_legend_handles_labels()):
-            if _l not in _leg_seen:
+            if _l not in _leg_seen and not _l.startswith('_'):
                 _leg_seen[_l] = _h
 
     # Hide unused panels
@@ -510,7 +572,7 @@ def diurnal_probe_vs_models(probe_diurnal, cycles_model, cycles_hayne,
             ncol=min(len(_leg_seen), 5),
             **{**_LEG_KW, 'fontsize': 9},
         )
-        fig.subplots_adjust(bottom=0.10)
+        fig.subplots_adjust(bottom=0.12)
 
     return fig
 
@@ -3160,7 +3222,7 @@ def borestem_correction_plot(stats, apollo_data, site_name,
     # Auto-zoom x-axis to the measurement zone so the ~1–3 K correction is visible.
     # Use Apollo data range when available, else model range at sensor depths.
     if a_d.size:
-        _pad = max(3.0, float(a_T.ptp()) * 0.15)
+        _pad = max(3.0, float(a_T.max() - a_T.min()) * 0.15)
         ax1.set_xlim(float(a_T.min()) - _pad, float(a_T.max()) + _pad)
     else:
         # Fall back: show region around the model profile at depths > 10 cm
@@ -3512,7 +3574,7 @@ def dem_hillshade_blended(elev_m, map_res, target_lat, target_lon,
                    aspect='auto')
 
     # Panel 3 — blended: elevation tinted by hillshade
-    elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+    elev_norm = (elev_m - elev_m.min()) / (elev_m.max() - elev_m.min() + 1e-9)
     blended = elev_norm * 0.6 + hs * 0.4
     im2 = axes[2].imshow(blended, origin='lower', cmap='terrain',
                          extent=[lons[0], lons[-1], lats[0], lats[-1]],
@@ -3570,7 +3632,7 @@ def apollo_sites_overview(elev_m_a15, map_res_a15,
         lons = site_lon + (np.arange(nx) - nx // 2) * map_res
 
         hs = _compute_hillshade(elev_m)
-        elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+        elev_norm = (elev_m - elev_m.min()) / (elev_m.max() - elev_m.min() + 1e-9)
         blended = elev_norm * 0.55 + hs * 0.45
 
         im = ax.imshow(blended, origin='lower', cmap='terrain',
@@ -3744,7 +3806,7 @@ def dem_slope_aspect_map(elev_m, map_res, target_lat, target_lon,
 
     # Panel 1 — elevation with hillshade
     hs = _compute_hillshade(elev_m)
-    elev_norm = (elev_m - elev_m.min()) / (elev_m.ptp() + 1e-9)
+    elev_norm = (elev_m - elev_m.min()) / (elev_m.max() - elev_m.min() + 1e-9)
     im0 = axes[0].imshow(elev_norm * 0.6 + hs * 0.4,
                          origin='lower', cmap='gist_earth',
                          extent=extent, aspect='auto')
@@ -4165,8 +4227,45 @@ def apollo_model_comparison_graph(
             tzinfo=datetime.timezone.utc)
 
     # ── LLT-based model anomaly extractor ────────────────────────────────────
-    def _model_llt_anom(cycles, depth_m):
-        """Return (llt_h, T_anom) for the model on the LLT axis."""
+    # The solver's t=0 is arbitrary, so we cannot convert model time to LLT via
+    # the hour-angle formula (that requires real UTC).  Instead we use peak
+    # alignment anchored to the SURFACE (shallowest available depth):
+    #
+    #   shift = day_h/2 − t_noon_model_surface
+    #
+    # where t_noon_model_surface is the time of peak surface temperature.
+    # The surface peaks at (or very close to) local noon by physics, so this
+    # shift maps the model onto the LLT axis without any guessing.
+    #
+    # CRITICAL: the same shift is applied to ALL depths.  This preserves the
+    # depth-dependent thermal phase lag (deeper sensors peak progressively later
+    # than noon).  Shifting each depth independently would destroy that lag and
+    # make every panel show a peak at noon — physically wrong.
+    #
+    # After correct alignment the Apollo data and model should show the same
+    # increasing phase lag with depth if the model's thermal diffusivity is right.
+
+    # Compute shift once from the shallowest depth in each model
+    def _compute_model_shift(cycles):
+        """Hours to add to model time_h so surface peak lands at LLT noon."""
+        if not cycles:
+            return 0.0
+        # Use shallowest available depth (closest to surface → smallest thermal lag)
+        dk_surf = min(cycles.keys())
+        t_h = np.asarray(cycles[dk_surf]['time_h'])
+        T   = np.asarray(cycles[dk_surf]['temperature'], dtype=float)
+        t_noon = float(t_h[np.argmax(T)])
+        return ((day_h / 2.0 - t_noon + day_h / 2) % day_h) - day_h / 2
+
+    _shift_disc  = _compute_model_shift(cycles_discrete)
+    _shift_hayne = _compute_model_shift(cycles_hayne)
+
+    def _model_llt_anom(cycles, depth_m, shift):
+        """Return (llt_h, T_anom) for the model on the LLT axis.
+
+        Uses the pre-computed surface shift so all depths share the same
+        time reference and depth-dependent phase lags are preserved.
+        """
         if not cycles:
             return None, None
         dk = _closest_model_depth(depth_m, cycles)
@@ -4175,9 +4274,7 @@ def apollo_model_comparison_graph(
         t_h = np.asarray(cycles[dk]['time_h'])
         T   = np.asarray(cycles[dk]['temperature'], dtype=float)
         T_a = T - float(np.mean(T))
-        _t0 = float(cycles[dk].get('t_start_sec', 0.0))
-        t_unix = _t0 + t_h * 3600.0
-        llt = _to_llt(t_unix)
+        llt = (t_h + shift) % day_h
         idx = np.argsort(llt)
         return llt[idx], T_a[idx]
 
@@ -4318,20 +4415,20 @@ def apollo_model_comparison_graph(
             )
 
         # Discrete model curve (LLT x-axis)
-        llt_d, A_d = _model_llt_anom(cycles_discrete, d_cm / 100.0)
+        llt_d, A_d = _model_llt_anom(cycles_discrete, d_cm / 100.0, _shift_disc)
         if llt_d is not None:
             ax3.plot(llt_d, A_d, lw=2.0, color=_C_DISC,
                      zorder=6, label='Discrete model')
 
         # Hayne model curve (LLT x-axis)
-        llt_h, A_h = _model_llt_anom(cycles_hayne, d_cm / 100.0)
+        llt_h, A_h = _model_llt_anom(cycles_hayne, d_cm / 100.0, _shift_hayne)
         if llt_h is not None:
             ax3.plot(llt_h, A_h, lw=2.0, color=_C_HAYNE,
                      ls='--', zorder=6, label='Hayne 2017')
 
         # Shadow fill
         if cycles_discrete_noshadow is not None:
-            llt_ns, A_ns = _model_llt_anom(cycles_discrete_noshadow, d_cm / 100.0)
+            llt_ns, A_ns = _model_llt_anom(cycles_discrete_noshadow, d_cm / 100.0, _shift_disc)
             if llt_ns is not None and llt_d is not None:
                 _tc_llt = np.linspace(0, day_h, 300)
                 A_d_int  = np.interp(_tc_llt, llt_d,  A_d)
@@ -4420,7 +4517,7 @@ def apollo_model_comparison_graph(
         tc_depths = [
             d for d in sorted(probe_diurnal.keys())
             if probe_diurnal[d].get('stype') == 'TC'
-            and probe_diurnal[d]['T_anom'].ptp() > 0.10
+            and (probe_diurnal[d]['T_anom'].max() - probe_diurnal[d]['T_anom'].min()) > 0.10
         ]
         sd_cm = tc_depths[0] if tc_depths else (
             depths_to_show[0] if depths_to_show else 14)
@@ -4458,13 +4555,13 @@ def apollo_model_comparison_graph(
             )
 
         # Discrete with shadowing
-        llt_ds, A_ds = _model_llt_anom(cycles_discrete, sd_cm / 100.0)
+        llt_ds, A_ds = _model_llt_anom(cycles_discrete, sd_cm / 100.0, _shift_disc)
         if llt_ds is not None:
             ax4.plot(llt_ds, A_ds, lw=2.2, color=_C_DISC, zorder=6,
                      label='Discrete (with shadowing)')
 
         # Discrete without shadowing
-        llt_ns4, A_ns4 = _model_llt_anom(cycles_discrete_noshadow, sd_cm / 100.0)
+        llt_ns4, A_ns4 = _model_llt_anom(cycles_discrete_noshadow, sd_cm / 100.0, _shift_disc)
         if llt_ns4 is not None:
             ax4.plot(llt_ns4, A_ns4, lw=2.0, color=_C_DISC,
                      ls='--', alpha=0.65, zorder=5,
@@ -4525,5 +4622,425 @@ def apollo_model_comparison_graph(
         fontsize=13, weight='bold', y=1.01,
     )
 
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BORESTEM IMPACT COMPARISON
+# ─────────────────────────────────────────────────────────────────────────────
+
+def borestem_impact(
+    site_name,
+    z_grid,
+    apollo_depths, apollo_temps, apollo_sensor_types,
+    disc_T_plain,  disc_dT_bs,
+    hayne_T_plain, hayne_dT_bs,
+    figsize=(15, 7),
+):
+    """
+    Three-panel figure showing the impact of the borestem correction.
+
+    Panel 1 — Mean temperature profile (T vs depth)
+        Apollo data points + four model variants: discrete plain,
+        discrete + borestem, Hayne plain, Hayne + borestem.
+
+    Panel 2 — Residuals (model − Apollo) vs depth
+        One curve per variant; shows whether borestem moves each model
+        closer to or further from the data at each depth.
+
+    Panel 3 — Bar chart of RMSE, |bias|, MAE
+        Grouped bars for all four variants so metric improvement from
+        the borestem correction is immediately visible.
+
+    Parameters
+    ----------
+    site_name           : 'Apollo 15' or 'Apollo 17'
+    z_grid              : full model depth grid (m)
+    apollo_depths       : 1-D array of Apollo sensor depths (m)
+    apollo_temps        : 1-D array of Apollo equilibrium temperatures (K)
+    apollo_sensor_types : list of sensor-type strings ('TG', 'TR', 'TC')
+    disc_T_plain        : model mean-T array (K) — discrete, no borestem
+    disc_dT_bs          : correction ΔT array (K) — discrete borestem total
+    hayne_T_plain       : model mean-T array (K) — Hayne, no borestem
+    hayne_dT_bs         : correction ΔT array (K) — Hayne borestem total
+    figsize             : figure size
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    apollo_depths = np.asarray(apollo_depths)
+    apollo_temps  = np.asarray(apollo_temps)
+
+    disc_T_bs  = disc_T_plain  + disc_dT_bs
+    hayne_T_bs = hayne_T_plain + hayne_dT_bs
+
+    def _errors(T_model_full):
+        """RMSE, bias, MAE of model interpolated to Apollo depths."""
+        m = np.interp(apollo_depths, z_grid, T_model_full)
+        r = m - apollo_temps
+        return (float(np.sqrt(np.mean(r**2))),
+                float(np.mean(r)),
+                float(np.mean(np.abs(r))),
+                r)
+
+    rmse_dp, bias_dp, mae_dp, res_dp = _errors(disc_T_plain)
+    rmse_db, bias_db, mae_db, res_db = _errors(disc_T_bs)
+    rmse_hp, bias_hp, mae_hp, res_hp = _errors(hayne_T_plain)
+    rmse_hb, bias_hb, mae_hb, res_hb = _errors(hayne_T_bs)
+
+    _C_DP = '#C0392B'   # discrete plain    — solid red
+    _C_DB = '#E8A49A'   # discrete borestem — light red
+    _C_HP = '#2471A3'   # hayne plain       — solid blue
+    _C_HB = '#85C1E9'   # hayne borestem    — light blue
+
+    variants = [
+        ('Discrete (plain)',      _C_DP, '-',  rmse_dp, bias_dp, mae_dp, res_dp, disc_T_plain),
+        ('Discrete (+ borestem)', _C_DB, '--', rmse_db, bias_db, mae_db, res_db, disc_T_bs),
+        ('Hayne (plain)',         _C_HP, '-',  rmse_hp, bias_hp, mae_hp, res_hp, hayne_T_plain),
+        ('Hayne (+ borestem)',    _C_HB, '--', rmse_hb, bias_hb, mae_hb, res_hb, hayne_T_bs),
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=figsize,
+                              gridspec_kw={'width_ratios': [1.6, 1.6, 1.8]})
+    ax_T, ax_res, ax_bar = axes
+
+    # ── Panel 1: T profile ────────────────────────────────────────────────────
+    for label, color, ls, *_, T_full in variants:
+        z_mask = z_grid <= apollo_depths.max() + 0.10
+        ax_T.plot(T_full[z_mask], z_grid[z_mask] * 100,
+                  color=color, ls=ls, lw=2.0, label=label)
+
+    _mk = {'TG': 'o', 'TR': 's', 'TC': '^'}
+    _lbl_added = set()
+    for d, T, st in zip(apollo_depths, apollo_temps, apollo_sensor_types):
+        mk  = _mk.get(st, 'o')
+        lbl = f'Apollo {st}' if st not in _lbl_added else '_nolegend_'
+        _lbl_added.add(st)
+        ax_T.scatter(T, d * 100, marker=mk, s=55, color='#2C3E50',
+                     zorder=6, label=lbl)
+
+    ax_T.invert_yaxis()
+    ax_T.set_xlabel('Mean temperature (K)', fontsize=10)
+    ax_T.set_ylabel('Depth (cm)', fontsize=10)
+    ax_T.set_title('Mean Temperature Profile', fontsize=11, weight='bold')
+    ax_T.legend(**{**_LEG_KW, 'fontsize': 8})
+    ax_T.grid(True, alpha=0.25)
+
+    # ── Panel 2: residuals ────────────────────────────────────────────────────
+    ax_res.axvline(0, color='#888', lw=1.0, ls=':')
+    for label, color, ls, *_, residuals, _T in variants:
+        ax_res.plot(residuals, apollo_depths * 100,
+                    color=color, ls=ls, lw=2.0,
+                    marker='o', markersize=4, label=label)
+
+    ax_res.invert_yaxis()
+    ax_res.set_xlabel('Residual: model − Apollo (K)', fontsize=10)
+    ax_res.set_ylabel('Depth (cm)', fontsize=10)
+    ax_res.set_title('Residuals vs Depth', fontsize=11, weight='bold')
+    ax_res.legend(**{**_LEG_KW, 'fontsize': 8})
+    ax_res.grid(True, alpha=0.25)
+
+    # ── Panel 3: metric bar chart ─────────────────────────────────────────────
+    metrics   = ['RMSE', '|Bias|', 'MAE']
+    n_metrics = len(metrics)
+    n_var     = len(variants)
+    bar_w     = 0.18
+    x         = np.arange(n_metrics)
+
+    for vi, (label, color, ls, rmse, bias, mae, *_) in enumerate(variants):
+        vals   = [rmse, abs(bias), mae]
+        offset = (vi - (n_var - 1) / 2) * bar_w
+        bars   = ax_bar.bar(x + offset, vals, bar_w,
+                            color=color, label=label,
+                            edgecolor='white', linewidth=0.6, zorder=3)
+        for bar, v in zip(bars, vals):
+            ax_bar.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.003,
+                        f'{v:.3f}', ha='center', va='bottom',
+                        fontsize=7.5, color=color, weight='bold')
+
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(metrics, fontsize=10)
+    ax_bar.set_ylabel('Temperature error (K)', fontsize=10)
+    ax_bar.set_title('Error Metrics', fontsize=11, weight='bold')
+    ax_bar.legend(**{**_LEG_KW, 'fontsize': 8})
+    ax_bar.grid(True, alpha=0.25, axis='y')
+    ax_bar.set_ylim(bottom=0)
+
+    fig.suptitle(
+        f'{site_name} — Borestem Correction Impact on Model–Apollo Agreement',
+        fontsize=12, weight='bold', y=1.02,
+    )
+    plt.tight_layout()
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DIURNAL WAVE HEATMAP
+# Shows the diurnal temperature anomaly as a 2-D image:
+#   X-axis = Local Lunar Time  (Midnight → Sunrise → Noon → Sunset → Midnight)
+#   Y-axis = Depth (cm, surface at top, increasing downward)
+#   Colour = T anomaly (K): red = warmer than mean, blue = cooler than mean
+#
+# Three panels: Apollo data (binned + interpolated), Discrete model, Hayne 2017
+# The diagonal "tilt" of the red tongue shows the thermal phase lag —
+# deeper layers warm up later.  The fading colour shows amplitude decay.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def diurnal_wave_heatmap(
+    site_name,
+    probe_diurnal,
+    T_profile_disc,  t_arr_disc,
+    T_profile_hayne, t_arr_hayne,
+    z_grid,
+    apollo_depths_cm=None,
+    model_name='Discrete',
+    hayne_name='Hayne 2017',
+    max_depth_cm=250,
+    n_llt_bins=72,
+    amp_threshold=0.05,
+    lat=None, lon=None,
+    figsize=(17, 6),
+):
+    """
+    Three-panel 2-D heatmap of the diurnal temperature anomaly wave.
+
+    Each panel shows T(z) − mean_T(z) as a colour field, so you can see:
+      • How the warm (red) dayside pulse penetrates downward from the surface
+      • How the amplitude decays — colours fade to white below the skin depth
+      • How the peak arrives later at deeper sensors (diagonal tilt)
+      • How well each model matches the Apollo data pattern
+
+    Parameters
+    ----------
+    site_name        : 'Apollo 15' or 'Apollo 17'
+    probe_diurnal    : dict from hfe_loader.get_probe_diurnal_cycle()
+    T_profile_disc   : (n_snapshots, n_depths) float32 — discrete model output
+    t_arr_disc       : (n_snapshots,) seconds — discrete model time array
+    T_profile_hayne  : same for Hayne model
+    t_arr_hayne      : same
+    z_grid           : (n_depths,) metres — depth grid (shared by both models)
+    apollo_depths_cm : sensor depths (cm) to mark with dashed lines; if None,
+                       derived from probe_diurnal keys
+    model_name       : label for discrete model panel
+    hayne_name       : label for Hayne panel
+    max_depth_cm     : how deep to show on the y-axis (cm)
+    n_llt_bins       : LLT resolution (default 72 = 10 h bins)
+    amp_threshold    : minimum Apollo anomaly amplitude (K) to include a depth
+    lat, lon         : site coordinates for the title (optional)
+    figsize          : figure size
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.colors as mcolors
+    from lunar.constants import LUNAR_DAY
+
+    day_h = LUNAR_DAY / 3600.0
+
+    # LLT landmarks (equatorial approximation: equal quarters)
+    _llt_sunrise = day_h / 4.0
+    _llt_noon    = day_h / 2.0
+    _llt_sunset  = day_h * 3.0 / 4.0
+
+    llt_edges = np.linspace(0, day_h, n_llt_bins + 1)
+    llt_mids  = 0.5 * (llt_edges[:-1] + llt_edges[1:])
+
+    # ── Phase alignment: anchor peak to noon, same logic as diurnal_probe_vs_models ─
+    def _compute_llt_shift_from_arr(time_h_arr, T_arr, n_bins=96):
+        edg  = np.linspace(0, day_h, n_bins + 1)
+        mg   = 0.5 * (edg[:-1] + edg[1:])
+        bidx = np.clip(np.searchsorted(edg, np.asarray(time_h_arr), side='right') - 1,
+                       0, n_bins - 1)
+        bm = np.full(n_bins, np.nan)
+        for b in range(n_bins):
+            vv = np.asarray(T_arr)[bidx == b]
+            if len(vv) >= 3:
+                bm[b] = np.mean(vv)
+        if (~np.isnan(bm)).sum() < 4:
+            return 0.0
+        t_peak = float(mg[np.nanargmax(bm)])
+        return ((day_h / 2.0 - t_peak + day_h / 2.0) % day_h) - day_h / 2.0
+
+    # Apollo shift — from highest-amplitude depth anomaly
+    _probe_depths_cm = sorted(probe_diurnal.keys())
+    _active = [d for d in _probe_depths_cm
+               if (probe_diurnal[d]['T_anom'].max() - probe_diurnal[d]['T_anom'].min())
+               >= amp_threshold]
+    if _active:
+        _ref_d  = max(_active, key=lambda d: probe_diurnal[d]['T_anom'].max()
+                                             - probe_diurnal[d]['T_anom'].min())
+        _ref_e  = probe_diurnal[_ref_d]
+        _apollo_shift = _compute_llt_shift_from_arr(_ref_e['time_h'], _ref_e['T_anom'])
+    else:
+        _apollo_shift = 0.0
+
+    # Model shifts — from surface temperature (index 0) of the final lunar day
+    def _model_shift_from_profile(T_prof, t_arr):
+        from lunar.constants import LUNAR_DAY as _LD
+        t_start = t_arr[-1] - _LD
+        idx = np.where(t_arr >= t_start)[0]
+        if len(idx) == 0:
+            idx = np.arange(len(t_arr))
+        t_h = (t_arr[idx] - t_start) / 3600.0
+        T_s = T_prof[idx, 0].astype(float)   # surface temperature
+        return _compute_llt_shift_from_arr(t_h, T_s)
+
+    _disc_shift  = _model_shift_from_profile(T_profile_disc,  t_arr_disc)
+    _hayne_shift = _model_shift_from_profile(T_profile_hayne, t_arr_hayne)
+
+    # ── Build model 2-D matrix from T_profile (full depth grid) ─────────────
+    def _build_model_matrix(T_prof, t_arr, z_g, shift_h, max_d_m):
+        from lunar.constants import LUNAR_DAY as _LD
+        t_start = t_arr[-1] - _LD
+        idx  = np.where(t_arr >= t_start)[0]
+        if len(idx) == 0:
+            idx = np.arange(len(t_arr))
+        t_h  = (t_arr[idx] - t_start) / 3600.0
+        T_fd = T_prof[idx, :].astype(float)   # (n_snap, n_z)
+
+        d_mask   = z_g <= max_d_m
+        depths_m = z_g[d_mask]
+        T_fd     = T_fd[:, d_mask]
+
+        # T anomaly at each depth
+        T_mean = np.mean(T_fd, axis=0, keepdims=True)
+        T_anom = T_fd - T_mean
+
+        # Map each snapshot to an LLT bin
+        t_llt  = (t_h + shift_h) % day_h
+        b_idx  = np.clip(np.searchsorted(llt_edges, t_llt, side='right') - 1,
+                         0, n_llt_bins - 1)
+
+        mat = np.full((len(depths_m), n_llt_bins), np.nan)
+        for b in range(n_llt_bins):
+            rows = np.where(b_idx == b)[0]
+            if len(rows) > 0:
+                mat[:, b] = np.mean(T_anom[rows, :], axis=0)
+
+        return depths_m * 100, mat   # depths in cm
+
+    max_d_m = max_depth_cm / 100.0
+    disc_depths_cm,  disc_mat  = _build_model_matrix(
+        T_profile_disc,  t_arr_disc,  z_grid, _disc_shift,  max_d_m)
+    hayne_depths_cm, hayne_mat = _build_model_matrix(
+        T_profile_hayne, t_arr_hayne, z_grid, _hayne_shift, max_d_m)
+
+    # ── Build Apollo 2-D matrix (sparse → interpolated) ─────────────────────
+    _a_depths_cm = np.array(sorted([d for d in _probe_depths_cm
+                                     if d <= max_depth_cm]), dtype=float)
+    # LLT-binned mean at each sensor depth
+    _a_bin_raw = {}
+    for d in _a_depths_cm:
+        e    = probe_diurnal[int(d)]
+        t_l  = (np.asarray(e['time_h']) + _apollo_shift) % day_h
+        T_a  = np.asarray(e['T_anom'])
+        bidx = np.clip(np.searchsorted(llt_edges, t_l, side='right') - 1,
+                       0, n_llt_bins - 1)
+        bm = np.full(n_llt_bins, np.nan)
+        for b in range(n_llt_bins):
+            vv = T_a[bidx == b]
+            if len(vv) >= 3:
+                bm[b] = np.mean(vv)
+        _a_bin_raw[d] = bm
+
+    # Interpolate vertically onto a fine depth grid matching disc_depths_cm
+    interp_depths = disc_depths_cm   # use model grid for smooth plot
+    apollo_mat    = np.full((len(interp_depths), n_llt_bins), np.nan)
+    _a_arr        = np.array([_a_bin_raw[d] for d in _a_depths_cm])   # (n_sensors, n_bins)
+    for b in range(n_llt_bins):
+        col = _a_arr[:, b]
+        good = ~np.isnan(col)
+        if good.sum() >= 2:
+            apollo_mat[:, b] = np.interp(interp_depths, _a_depths_cm[good], col[good],
+                                          left=np.nan, right=np.nan)
+
+    # ── Shared colour limits (97th percentile of all data) ───────────────────
+    all_vals = np.concatenate([m[~np.isnan(m)].ravel()
+                               for m in [apollo_mat, disc_mat, hayne_mat]])
+    vmax = float(np.percentile(np.abs(all_vals), 97)) if len(all_vals) > 0 else 3.0
+
+    cmap = 'RdBu_r'
+    norm = mcolors.TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
+    # ── Figure layout ─────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(1, 3, figsize=figsize,
+                              gridspec_kw={'width_ratios': [1, 1, 1]})
+
+    panels = [
+        ('Apollo Data\n(binned & depth-interpolated)', interp_depths, apollo_mat),
+        (model_name,                                   disc_depths_cm, disc_mat),
+        (hayne_name,                                   hayne_depths_cm, hayne_mat),
+    ]
+
+    imgs = []
+    for pi, (title, depths_cm, mat) in enumerate(panels):
+        ax = axes[pi]
+
+        im = ax.pcolormesh(llt_mids, depths_cm, mat,
+                           cmap=cmap, norm=norm, shading='nearest')
+        imgs.append(im)
+
+        # Night shading (dark overlay)
+        for x0, x1 in [(0, _llt_sunrise), (_llt_sunset, day_h)]:
+            ax.axvspan(x0, x1, color='k', alpha=0.15, zorder=2, lw=0)
+
+        # Sunrise / noon / sunset vertical lines
+        for xv, lc, lw, ls, lbl in [
+            (_llt_sunrise, '#FFB347', 1.2, '--', 'Sunrise'),
+            (_llt_noon,    '#FFD700', 2.0, '-',  'Noon'),
+            (_llt_sunset,  '#FFB347', 1.2, '--', 'Sunset'),
+        ]:
+            ax.axvline(xv, color=lc, lw=lw, ls=ls, alpha=0.85, zorder=3)
+            ax.annotate(lbl, xy=(xv, 0), xycoords=('data', 'axes fraction'),
+                        ha='center', va='bottom', fontsize=7,
+                        color=lc, xytext=(0, 3), textcoords='offset points',
+                        clip_on=False)
+
+        # Apollo sensor depths as thin horizontal dashed lines
+        for d_cm in _a_depths_cm:
+            ax.axhline(d_cm, color='white', lw=0.6, ls=':', alpha=0.55, zorder=4)
+        if pi == 0:
+            # Also label the depths on the Apollo panel
+            for d_cm in _a_depths_cm:
+                ax.text(day_h * 0.01, d_cm, f'{int(d_cm)} cm',
+                        color='white', fontsize=5.5, va='center',
+                        ha='left', zorder=5, alpha=0.80)
+
+        # Axes configuration
+        ax.set_ylim(min(depths_cm[-1], max_depth_cm), 0)   # depth downward
+        ax.set_xlim(0, day_h)
+
+        _ticks  = [0, _llt_sunrise, _llt_noon, _llt_sunset, day_h]
+        _labels = [f'Midnight\n(0h)', f'Sunrise\n({_llt_sunrise:.0f}h)',
+                   f'Noon\n({_llt_noon:.0f}h)', f'Sunset\n({_llt_sunset:.0f}h)',
+                   f'Midnight\n({day_h:.0f}h)']
+        ax.set_xticks(_ticks)
+        ax.set_xticklabels(_labels, fontsize=8)
+        ax.set_xlabel('Local Lunar Time', fontsize=9)
+
+        ax.set_title(title, fontsize=11, weight='bold', pad=10)
+        if pi == 0:
+            ax.set_ylabel('Depth (cm)  —  surface at top', fontsize=9)
+        else:
+            ax.set_yticklabels([])
+
+        ax.grid(False)
+
+    # Shared colourbar
+    cb = fig.colorbar(imgs[0], ax=axes.tolist(), shrink=0.72,
+                      pad=0.02, aspect=30)
+    cb.set_label('T anomaly (K)\n(red = warmer · blue = cooler)', fontsize=9)
+
+    _coord_str = (f'  ·  Lat {lat:.2f}°  Lon {lon:.2f}°' if lat is not None else '')
+    fig.suptitle(
+        f'{site_name} — Diurnal Thermal Wave: Temperature Anomaly vs Depth & Time\n'
+        f'Diagonal tilt = thermal phase lag; fading colour = amplitude decay with depth'
+        + _coord_str,
+        fontsize=11, weight='bold', y=1.03,
+    )
     plt.tight_layout()
     return fig

@@ -93,6 +93,7 @@ def get_diurnal_cycles(T_profile, t_arr, z_grid, depths_m=None):
             'time_h':       t_hours,
             'temperature':  T_profile[idx, iz],
             'actual_depth': float(z_grid[iz]),
+            't_start_sec':  float(t_start),   # absolute solver time of final-day start
         }
     return cycles
 

@@ -84,7 +84,7 @@ def create_depth_grid(depth_max=DEPTH_MAX,
 # EQUILIBRIUM PROFILE INITIALISATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_equilibrium_profile(z_grid, T_surf_mean, model_id, chi=2.7):
+def compute_equilibrium_profile(z_grid, T_surf_mean, model_id, chi=2.7, H_param=0.07):
     """
     Compute the geothermal steady-state temperature profile for initialisation.
 
@@ -125,7 +125,7 @@ def compute_equilibrium_profile(z_grid, T_surf_mean, model_id, chi=2.7):
     # Evaluate k at a representative subsurface temperature
     T_ref = T_surf_mean   # a good approximation for z > 0.3 m
     k_arr = np.array([
-        tc_fn(T_ref, float(zi), chi, model_id)
+        tc_fn(T_ref, float(zi), chi, model_id, H_param)
         for zi in z
     ])
 
@@ -194,6 +194,7 @@ def _solve_thermal_model_core(
     dt_frac,
     albedo,
     emissivity,
+    H_param,
 ):
     """
     Numba-compiled core of the 1-D thermal solver.
@@ -261,8 +262,8 @@ def _solve_thermal_model_core(
 
         # Material properties at current temperatures
         for iz in range(nz):
-            rho[iz] = get_density(z_grid[iz], model_id)
-            k[iz]   = thermal_conductivity(T[iz], z_grid[iz], chi, model_id)
+            rho[iz] = get_density(z_grid[iz], model_id, H_param)
+            k[iz]   = thermal_conductivity(T[iz], z_grid[iz], chi, model_id, H_param)
             cp[iz]  = heat_capacity(T[iz])
 
         # Surface BC
@@ -297,6 +298,134 @@ def _solve_thermal_model_core(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NUMBA CORE — custom k_solid array (for borestem-corrected runs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@njit(cache=False, fastmath=True)
+def _solve_thermal_model_ksolid(
+    z_grid,
+    T_init_arr,
+    lat_deg, lon_deg,
+    slope, aspect,
+    horizons, az_angles,
+    chi,
+    rho_arr,
+    sunscale,
+    ndays,
+    dt_frac,
+    albedo,
+    emissivity,
+    k_solid_arr,
+):
+    """
+    Numba-compiled solver that accepts a pre-computed k_solid array (one value
+    per depth node) instead of a model_id + H_param.  Used for borestem-
+    corrected runs where k_eff(z) is supplied from outside.
+
+    k_total(iz) = k_solid_arr[iz] * (1 + chi * (T[iz] / 350)**3)
+    rho_arr     : density at each depth node (kg/m³) — pre-computed
+    """
+    nz = len(z_grid)
+    T  = np.empty(nz, dtype=np.float64)
+    for iz in range(nz):
+        T[iz] = T_init_arr[iz]
+
+    dz_min    = np.min(np.diff(z_grid))
+    alpha_max = 2.0e-8
+    dt_stable = 0.5 * dz_min ** 2 / alpha_max
+    dt        = dt_frac * dt_stable
+
+    nt_total      = int(np.ceil(ndays * LUNAR_DAY / dt))
+    save_interval = max(1, nt_total // 10_000)
+    nt_save       = nt_total // save_interval + 1
+
+    T_profile = np.zeros((nt_save, nz), dtype=np.float32)
+    t_arr     = np.zeros(nt_save,       dtype=np.float32)
+    dz        = np.diff(z_grid)
+
+    T_profile[0, :] = T.astype(np.float32)
+    save_idx = 1
+
+    k  = np.empty(nz, dtype=np.float64)
+    cp = np.empty(nz, dtype=np.float64)
+
+    for it in range(nt_total):
+        t = it * dt
+
+        zenith, azimuth, _ = solar_geometry(lat_deg, lon_deg, t)
+        lit     = check_illumination(zenith, azimuth, horizons, az_angles)
+        Q_solar = (direct_solar_flux(zenith, azimuth, slope, aspect,
+                                     sunscale, albedo)
+                   if lit else 0.0)
+
+        for iz in range(nz):
+            k[iz]  = k_solid_arr[iz] * (1.0 + chi * (T[iz] / 350.0) ** 3)
+            cp[iz] = heat_capacity(T[iz])
+
+        T[0] = _surface_bc(T[1], dz[0], Q_solar, k[0], emissivity)
+
+        T_new = T.copy()
+        for iz in range(1, nz - 1):
+            k_m  = 2.0 * k[iz-1] * k[iz]     / (k[iz-1] + k[iz])
+            k_p  = 2.0 * k[iz]   * k[iz+1]   / (k[iz]   + k[iz+1])
+            q_m  = k_m * (T[iz] - T[iz-1])   / dz[iz-1]
+            q_p  = k_p * (T[iz+1] - T[iz])   / dz[iz]
+            dz_c = 0.5 * (dz[iz-1] + dz[iz])
+            T_new[iz] = T[iz] + dt * (q_p - q_m) / (dz_c * rho_arr[iz] * cp[iz])
+
+        T_new[-1] = T[-2] + Q_basal * dz[-1] / k[-1]
+        T = T_new
+
+        if (it + 1) % save_interval == 0 and save_idx < nt_save:
+            T_profile[save_idx, :] = T.astype(np.float32)
+            t_arr[save_idx]        = (it + 1) * dt
+            save_idx += 1
+
+    return T_profile, t_arr
+
+
+def solve_with_ksolid(
+    z_grid, T_init,
+    lat_deg, lon_deg,
+    slope, aspect,
+    horizons, az_angles,
+    chi, rho_arr, k_solid_arr,
+    sunscale, ndays,
+    dt_frac   = 0.20,
+    albedo    = DEFAULT_ALBEDO,
+    emissivity= DEFAULT_EMISSIVITY,
+):
+    """
+    Run the Numba-compiled solver with a custom k_solid array (borestem runs).
+
+    Parameters
+    ----------
+    rho_arr     : (n,) float64 — density at each depth node (kg/m³)
+    k_solid_arr : (n,) float64 — solid thermal conductivity at each node (W/m/K)
+    """
+    nz = len(z_grid)
+    T_init_arr = np.asarray(T_init, dtype=np.float64)
+    if T_init_arr.ndim == 0 or len(T_init_arr) != nz:
+        T_init_arr = np.full(nz, float(T_init), dtype=np.float64)
+    return _solve_thermal_model_ksolid(
+        np.asarray(z_grid,      dtype=np.float64),
+        T_init_arr,
+        float(lat_deg), float(lon_deg),
+        float(slope), float(aspect),
+        np.asarray(horizons,    dtype=np.float64),
+        np.asarray(az_angles,   dtype=np.float64),
+        float(chi),
+        np.asarray(rho_arr,     dtype=np.float64),
+        float(sunscale),
+        float(ndays),
+        float(dt_frac),
+        float(albedo),
+        float(emissivity),
+        np.asarray(k_solid_arr, dtype=np.float64),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC API WRAPPER — accepts scalar or array T_init
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -313,6 +442,7 @@ def solve_thermal_model(
     dt_frac    = 0.20,
     albedo     = DEFAULT_ALBEDO,
     emissivity = DEFAULT_EMISSIVITY,
+    H_param    = 0.07,
 ):
     """
     Run the 1-D thermal diffusion model at a single surface point.
@@ -393,7 +523,7 @@ def solve_thermal_model(
         slope, aspect,
         horizons, az_angles,
         chi, model_id, sunscale, ndays,
-        dt_frac, albedo, emissivity,
+        dt_frac, albedo, emissivity, H_param,
     )
 
 

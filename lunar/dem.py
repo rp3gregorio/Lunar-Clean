@@ -135,9 +135,12 @@ def load_ldem(search_dirs=None):
         # Search standard local locations only — no hard-coded environment-
         # specific cloud paths (/mnt/project, /home/claude) that silently
         # fail in any non-cloud environment.
+        _here = Path(__file__).resolve().parent   # lunar/
         search_dirs = [
             Path('.'),                   # current working directory
-            Path('data'),                # data/ subfolder (common layout)
+            _here.parent,                # repo root (where LDEM files live)
+            _here.parent / 'data',       # repo root / data/
+            Path('data'),                # data/ relative to cwd
             Path('..') / 'data',         # ../data/ (notebook one level up)
             Path.home() / 'data',        # ~/data/
             Path.home() / 'lunar_data',  # ~/lunar_data/
@@ -153,7 +156,11 @@ def load_ldem(search_dirs=None):
     for d in search_dirs:
         if not d.exists():
             continue
-        print(f'Searching: {d.resolve()}')
+        try:
+            _display = d.resolve()
+        except (PermissionError, OSError):
+            _display = d
+        print(f'Searching: {_display}')
         for pat in patterns:
             for lbl_path in sorted(d.glob(pat)):
                 searched.append(str(lbl_path))
